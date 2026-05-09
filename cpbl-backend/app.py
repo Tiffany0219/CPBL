@@ -1,0 +1,863 @@
+import re, time, json, traceback
+from datetime import datetime
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from bs4 import BeautifulSoup
+import time
+import traceback
+# ✅ 修改後
+from flask import Flask, render_template, jsonify, request
+from flask import jsonify
+from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from sqlalchemy import or_
+from flask import Flask, render_template, jsonify, request # 1. 確保有匯入
+
+app = Flask(__name__)
+CORS(app)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cpbl_data.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+class Game(db.Model):
+    id          = db.Column(db.Integer, primary_key=True)
+    game_date   = db.Column(db.String(10))
+    game_sno = db.Column(db.String(10))
+    game_time   = db.Column(db.String(20), default="") 
+    away_team   = db.Column(db.String(100))
+    away_score  = db.Column(db.String(10), default="--")
+    away_pitcher = db.Column(db.String(50), default="") # 🔴 新增客隊投手
+    home_team   = db.Column(db.String(100))
+    home_score  = db.Column(db.String(10), default="--")
+    home_pitcher = db.Column(db.String(50), default="") # 🔴 新增主隊投手
+    location    = db.Column(db.String(100), default="未知")
+    game_status = db.Column(db.String(20), default="")
+    away_line = db.Column(db.String(200), default="")
+    home_line = db.Column(db.String(200), default="")
+    away_rhe = db.Column(db.String(20), default="0,0,0") # 格式: "R,H,E"
+    home_rhe = db.Column(db.String(20), default="0,0,0")
+
+with app.app_context():
+    db.create_all()
+
+def make_driver():
+    opts = Options()
+    opts.add_argument('--headless')
+    opts.add_argument('--no-sandbox')
+    opts.add_argument('--disable-gpu')
+    opts.add_argument('--window-size=1920,1080')
+    opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+    return webdriver.Chrome(options=opts)
+
+def parse_date(txt):
+    m = re.search(r'(\d{1,2})/(\d{1,2})', txt)
+    if m:
+        parts = txt.split('/')
+        # 如果是 2026/04/16
+        if len(parts) >= 3: return f"{parts[1].zfill(2)}/{parts[2][:2].zfill(2)}"
+        # 如果是 04/16
+        return f"{m.group(1).zfill(2)}/{m.group(2).zfill(2)}"
+    return ""
+
+# --- 格式化輔助函數：確保數據轉成陣列 ---
+# --- 格式化輔助函數：增加球員參數 ---
+def format_game_detail(game, away_players=None, home_players=None):
+    def to_list(val):
+        # 統一處理資料庫讀出來的字串
+        if not val or val in ["", "-", "None"]: 
+            return []
+        return val.split(',')
+
+    return {
+        "away_team": game.away_team,
+        "home_team": game.home_team,
+        "away_line": to_list(game.away_line),
+        "home_line": to_list(game.home_line),
+        "away_rhe": to_list(game.away_rhe),
+        "home_rhe": to_list(game.home_rhe),
+        # 🟢 重點：如果呼叫時有給球員名單就用它，沒有就給空陣列
+        "away_players": away_players if away_players is not None else [],
+        "home_players": home_players if home_players is not None else []
+    }
+
+def parse_game_box(soup):
+    line_data = {"away": [], "home": [], "away_rhe": [], "home_rhe": []}
+    away_p, home_p = [], []
+    
+    # --- 1. 抓取上方比分 (縫合拆分式表格) ---
+    score_wrap = soup.select_one('.linescore_wrap')
+    
+    if score_wrap:
+        for side in ['away', 'home']:
+            # 🟢 A. 從中間捲動區 (scrollable) 抓取 1~9 局分數
+            # 這裡的 td 全部都是分數，不包含隊名或總分
+            scroll_tr = score_wrap.select_one(f'.linescore.scrollable tr.{side}')
+            if scroll_tr:
+                line_data[side] = [td.get_text(strip=True) or "0" for td in scroll_tr.select('td')]
+
+            # 🟢 B. 從右邊固定區 (fixed) 抓取 R-H-E 總分
+            # 這裡精確抓取最後的三個數據
+            fixed_tr = score_wrap.select_one(f'.linescore.fixed tr.{side}')
+            if fixed_tr:
+                rhe_values = [td.get_text(strip=True) or "0" for td in fixed_tr.select('td')]
+                # 有時候官網會有空白或"-"，我們統一轉為數字
+                line_data[f"{side}_rhe"] = [v if v.isdigit() else "0" for v in rhe_values]
+                
+                # 🕵️ 自動校正：如果總分(R)欄位是 0，但前面局數加總有分數，幫它補上
+                total_r_calc = sum(int(x) for x in line_data[side] if x.isdigit())
+                if int(line_data[f"{side}_rhe"][0]) == 0 and total_r_calc > 0:
+                    line_data[f"{side}_rhe"][0] = str(total_r_calc)
+
+    # --- 2. 抓取球員 (維持精確的數字過濾邏輯) ---
+    all_tables = soup.select('.RecordTable table')
+    valid_numeric_tables = []
+    
+    for t in all_tables:
+        headers = [th.get_text(strip=True) for th in t.select('th')]
+        if "打數" in headers:
+            rows = t.select('tbody tr')
+            p_list = []
+            is_numeric_table = True
+            for row in rows:
+                cols = row.select('td')
+                if len(cols) < 5 or "小計" in row.get_text(): continue
+                
+                ab_val = cols[1].get_text(strip=True)
+                # 檢查打數是否為純數字，排除「右飛/三滾」那張文字描述表
+                if not ab_val.isdigit():
+                    is_numeric_table = False
+                    break
+                
+                p_list.append({
+                    "name": cols[0].get_text(strip=True).split('(')[0],
+                    "ab": ab_val,
+                    "h": cols[3].get_text(strip=True),
+                    "rbi": cols[4].get_text(strip=True)
+                })
+            
+            if is_numeric_table and p_list:
+                valid_numeric_tables.append(p_list)
+    
+    if len(valid_numeric_tables) >= 1: away_p = valid_numeric_tables[0]
+    if len(valid_numeric_tables) >= 2: home_p = valid_numeric_tables[1]
+                
+    return line_data, away_p, home_p
+
+# --- 路由：增加強制等待與 JS 點擊 ---
+@app.route('/api/game/detail/<int:game_id>')
+def get_game_detail(game_id):
+    game = db.session.get(Game, game_id)
+    if not game:
+        return jsonify({"error": "找不到比賽"}), 404
+
+    driver = None
+    try:
+        driver = make_driver()
+        url = f"https://www.cpbl.com.tw/box/index?gameSno={game.game_sno}&year=2026&kindCode=A"
+        driver.get(url)
+
+        # 🟢 強制點擊「詳細紀錄」標籤
+        driver.execute_script("""
+            var links = document.querySelectorAll('.tabs li a');
+            for(var i=0; i<links.length; i++){
+                if(links[i].innerText.includes('詳細紀錄')){
+                    links[i].click();
+                    break;
+                }
+            }
+        """)
+        
+        # 🟢 關鍵等待：RecordTable 需要時間載入
+        import time
+        time.sleep(10) 
+        driver.execute_script("window.scrollTo(0, 1000);")
+        time.sleep(2)
+        
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        line, a_p, h_p = parse_game_box(soup)
+        
+        # 🕵️ 核心邏輯：判斷比賽是否已經開始
+        # 檢查 RHE 是否有任何得分或安打，或者是否已經抓到球員名單
+        is_started = any(int(x) > 0 for x in line.get('away_rhe', ['0']) if x.isdigit()) or \
+                     any(int(x) > 0 for x in line.get('home_rhe', ['0']) if x.isdigit()) or \
+                     len(a_p) > 0
+
+        # 🟢 存入資料庫 (只有在比賽已經開始且抓到球員時才更新)
+        if is_started and a_p:
+            game.away_line = ",".join(line["away"])
+            game.home_line = ",".join(line["home"])
+            game.away_rhe = ",".join(line["away_rhe"])
+            game.home_rhe = ",".join(line["home_rhe"])
+            db.session.commit()
+            print(f"✅ 成功更新資料庫：客隊 {len(a_p)} 人")
+
+        # 🟢 回傳 JSON 給前端
+        return jsonify({
+            "away_team": game.away_team,
+            "home_team": game.home_team,
+            # 如果還沒開始，回傳空陣列讓前端顯示「尚未開始」
+            "away_line": line["away"] if is_started else [],
+            "home_line": line["home"] if is_started else [],
+            "away_rhe": line["away_rhe"] if is_started else ["0", "0", "0"],
+            "home_rhe": line["home_rhe"] if is_started else ["0", "0", "0"],
+            "away_players": a_p, # 若沒開始，parse_game_box 會回傳 []
+            "home_players": h_p
+        })
+
+    except Exception as e:
+        print(f"❌ 錯誤: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+
+@app.route('/api/update/schedule')
+def update_schedule():
+    driver = None
+    try:
+        driver = make_driver()
+        # 直接進入 4 月賽程清單模式
+        driver.get("https://www.cpbl.com.tw/schedule?&GameType=1&Month=04&Year=2026") 
+        time.sleep(10)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # 同時支援賽程表 (tr) 和 可能出現在清單中的 game_item
+        rows = soup.select('.ScheduleTableList table tbody tr, .game_item')
+        
+        last_date = ""; count = 0
+        for row in rows:
+            if row.select_one('th') or "無比賽" in row.text: continue
+            
+            # 1. 抓日期
+            d_node = row.select_one('td.date')
+            if d_node and d_node.get_text(strip=True):
+                # 這裡使用你原本的 parse_date 函數
+                last_date = parse_date(d_node.get_text(strip=True))
+            if not last_date: continue
+
+            # 2. 抓隊伍與地點
+            team_td = row.select_one('td.team')
+            if not team_td:
+                # 備援：針對首頁結構 (.game_item)
+                teams = row.select('.team_name, .name')
+                if len(teams) < 2: continue
+                aw, ho = teams[0].get_text(strip=True), teams[1].get_text(strip=True)
+                loc = row.select_one('.place').get_text(strip=True) if row.select_one('.place') else "未知"
+            else:
+                # 針對賽程表結構 (tr)
+                aw = team_td.select_one('.name.away').get_text(strip=True)
+                ho = team_td.select_one('.name.home').get_text(strip=True)
+                loc = (row.select_one('td.venue') or row.select_one('.place')).get_text(strip=True)
+
+            if any(x in loc for x in ["青埔", "園區"]): continue
+
+            # 🧢 抓取投手資訊 (精準對應你的截圖路徑)
+            aw_p_node = row.select_one('.PlayerMatchup.away_sp .name')
+            ho_p_node = row.select_one('.PlayerMatchup.home_sp .name')
+            aw_p = aw_p_node.get_text(strip=True) if aw_p_node else ""
+            ho_p = ho_p_node.get_text(strip=True) if ho_p_node else ""
+                # ... 其他欄位更新 ...
+            # 3. 🚩 智能狀態與時間判定 (整合 .time 標籤與 .final 類別)
+            row_classes = row.get('class', [])
+            raw_text = row.get_text(" ", strip=True)
+            
+            st, ascore, hscore, gtime = "", "--", "--", ""
+            
+            # 優先檢查是否為結束 (Class 包含 final 或文字包含 比賽結束)
+            is_finish = "final" in row_classes or any(x in raw_text for x in ["比賽結束", "Final", "結束"])
+            # 檢查是否為比賽中
+            is_live = "live" in row_classes or any(x in raw_text for x in ["比賽中", "live"]) or "局" in raw_text
+
+            if is_finish:
+                st, gtime = "FINISH", "Final"
+                # 嘗試抓比分
+                score_node = row.select_one('.score, .score_wrap')
+                if score_node and ":" in score_node.get_text():
+                    pts = score_node.get_text(strip=True).split(":")
+                    ascore, hscore = pts[0].strip(), pts[1].strip()
+            
+            elif is_live:
+                st = "LIVE"
+                # 嘗試抓比分
+                score_node = row.select_one('.score, .score_wrap')
+                if score_node and ":" in score_node.get_text():
+                    pts = score_node.get_text(strip=True).split(":")
+                    ascore, hscore = pts[0].strip(), pts[1].strip()
+                # 抓局數
+                m_inning = re.search(r'(\d+局[上下]?)', raw_text)
+                gtime = m_inning.group(1) if m_inning else "LIVE"
+                
+            else:
+                # 🟡 尚未開賽：針對你截圖中的 .time 標籤
+                st = ""
+                time_node = row.select_one('.time')
+                if time_node:
+                    gtime = time_node.get_text(strip=True)
+                else:
+                    # 備援：如果沒找到 .time 標籤，看比分欄位有沒有時間格式
+                    score_node = row.select_one('.score')
+                    score_txt = score_node.get_text(strip=True) if score_node else ""
+                    if ":" in score_txt:
+                        gtime = score_txt
+
+            # 4. DB 更新或新增
+            exist = Game.query.filter_by(game_date=last_date, away_team=aw, home_team=ho).first()
+            if not exist:
+                db.session.add(Game(
+                    game_date=last_date, game_time=gtime, 
+                    away_team=aw, away_score=ascore, away_pitcher=aw_p,
+                    home_team=ho, home_score=hscore, home_pitcher=ho_p,
+                    location=loc, game_status=st
+                ))
+            else:
+                exist.away_score, exist.home_score = ascore, hscore
+                exist.game_time, exist.game_status = gtime, st
+                exist.away_pitcher, exist.home_pitcher = aw_p, ho_p
+            
+        db.session.commit()
+        return jsonify({"status": "success", "count": count})
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+@app.route('/api/update/today')
+def update_today():
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get("https://www.cpbl.com.tw/")
+        time.sleep(12) 
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # 1. 確認日期
+        d_node = soup.select_one('.date_selected .date, .date_select .date')
+        anchor_date = parse_date(d_node.get_text()) if d_node else "04/17"
+
+        # 🟢 2. 使用你提供的正確對照表
+        team_map = {
+            'ADD011': '統一',
+            'AAA011': '味全',
+            'ACN011': '中信',
+            'AJL011': '樂天',
+            'AEO011': '富邦',
+            'AKP011': '台鋼'
+        }
+
+        items = soup.select('.game_item, .IndexScheduleList .item, .item')
+        print(f"\n[DEBUG] --- 🕵️ ID 識別同步：{anchor_date} ---")
+        count = 0
+
+        for i, item in enumerate(items):
+            # 只有包含先發資訊的才處理
+            if "先發" not in item.get_text(): continue
+
+            # 🟢 3. 透過 URL 中的 teamNo 識別隊伍
+            def get_team_by_id(selector):
+                a_tag = item.select_one(selector)
+                if a_tag and 'href' in a_tag.attrs:
+                    href = a_tag['href']
+                    # 抓取 teamNo= 後面的 ID
+                    match = re.search(r'teamNo=([^&?]+)', href)
+                    if match:
+                        tid = match.group(1)
+                        name = team_map.get(tid, "")
+                        if not name: 
+                            # 如果 ID 沒在表裡，就抓 a 標籤的 title 當備援
+                            name = (a_tag.get('title') or "")[:2]
+                        return name
+                return ""
+
+            aw_n = get_team_by_id('.team.away .team_name a')
+            ho_n = get_team_by_id('.team.home .team_name a')
+
+            # 🟢 4. 抓取並清洗投手姓名
+            aw_p_node = item.select_one('.away_sp .name, [class*="away_sp"] .name')
+            ho_p_node = item.select_one('.home_sp .name, [class*="home_sp"] .name')
+            
+            def clean_p(txt):
+                if not txt: return ""
+                for s in ["客場先發", "主場先發", "P:", "先發", " "]: txt = txt.replace(s, "")
+                return txt.strip()
+
+            aw_p = clean_p(aw_p_node.get_text(strip=True)) if aw_p_node else ""
+            ho_p = clean_p(ho_p_node.get_text(strip=True)) if ho_p_node else ""
+
+            print(f"📍 鎖定區塊 #{i}: {aw_n}({aw_p}) vs {ho_n}({ho_p})")
+
+            # 🟢 5. 更新 DB (模糊比對)
+            if aw_n and ho_n:
+                # 使用 contains 確保「味全」能對上資料庫裡的「味全龍」
+                game = Game.query.filter(
+                    Game.game_date == anchor_date,
+                    Game.away_team.contains(aw_n),
+                    Game.home_team.contains(ho_n)
+                ).first()
+
+                if game:
+                    game.away_pitcher, game.home_pitcher = aw_p, ho_p
+                    
+                    # 🟢 6. 安全抓取比分 (不再用 int 轉型，防止 VS. 澄清湖 報錯)
+                    score_node = item.select_one('.score, .num')
+                    if score_node and ":" in score_node.get_text():
+                        s_text = score_node.get_text(strip=True)
+                        if "VS" not in s_text: # 排除掉 "VS.澄清湖18:35" 這種格式
+                            parts = s_text.split(":")
+                            game.away_score, game.home_score = parts[0].strip(), parts[1].strip()
+                    
+                    # 處理狀態
+                    full_txt = item.get_text()
+                    if "結束" in full_txt:
+                        game.game_status, game.game_time = "FINISH", "Final"
+                    elif "比賽" in full_txt:
+                        game.game_status = "LIVE"
+                        m = re.search(r'(\d+局[上下]?)', full_txt)
+                        game.game_time = m.group(1) if m else "LIVE"
+
+                    count += 1
+                    print(f"✅ 更新成功！")
+                else:
+                    print(f"❌ DB找不到 {anchor_date} 的 {aw_n} vs {ho_n}")
+
+        db.session.commit()
+        return jsonify({"status": "success", "count": count})
+    finally:
+        if driver: driver.quit()
+
+from sqlalchemy import or_  # 🔴 務必確認有這一行
+
+@app.route('/api/games')
+def get_games():
+    # 1. 接收前端傳來的參數
+    date = request.args.get('date', '')
+    team = request.args.get('team', '') # 🟢 接收球隊參數
+    
+    # 2. 基本查詢：按日期排序
+    q = Game.query.order_by(Game.game_date.asc())
+    
+    # 3. 條件篩選：日期
+    if date: 
+        q = q.filter(Game.game_date == date)
+        
+    # 4. 條件篩選：球隊 (只要是主隊或客隊其中之一符合就抓出來)
+    if team:
+        q = q.filter(or_(Game.away_team == team, Game.home_team == team))
+    
+    # 5. 回傳資料 (包含你剛補上的投手欄位)
+    return jsonify([{
+        "id": g.id,
+        "date": g.game_date,
+        "game_sno": g.game_sno,
+        "game_time": g.game_time,
+        "away": g.away_team,
+        "home": g.home_team,
+        "away_score": g.away_score,
+        "home_score": g.home_score,
+        "away_pitcher": g.away_pitcher, 
+        "home_pitcher": g.home_pitcher, 
+        "location": g.location,
+        "status": g.game_status
+    } for g in q.all()])
+
+@app.route('/api/update/month')
+def update_specific_month():
+    target_m = request.args.get('m', type=int)
+    if not target_m: return jsonify({"status": "error", "message": "月份缺失"}), 400
+    
+    print(f"--- 🚀 執行升級版同步：目標 {target_m} 月 ---")
+    driver = None
+    try:
+        driver = make_driver()
+        # 1. 永遠先進首頁
+        driver.get("https://www.cpbl.com.tw/schedule")
+        time.sleep(5)
+
+        # 2. 機器人自動點擊切換月份
+        for _ in range(10):
+            current_text = driver.find_element(By.CSS_SELECTOR, ".date_selected .date").text
+            current_m = int(current_text.split('/')[-1].strip())
+            if current_m == target_m: break
+            
+            btn_class = ".next" if current_m < target_m else ".prev"
+            driver.find_element(By.CSS_SELECTOR, f".prevNext {btn_class}").click()
+            time.sleep(3)
+
+        # 3. 確保切換到列表模式
+        try:
+            driver.find_element(By.CSS_SELECTOR, "li[data-id='list']").click()
+            time.sleep(3)
+        except: pass
+
+        # 4. 開始解析
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        rows = soup.select('.ScheduleTableList table tbody tr')
+        
+        last_date = ""
+        count = 0
+        for row in rows:
+            # 排除標題或無比賽
+            if row.select_one('th') or "無比賽" in row.get_text(): 
+                continue
+            
+            # --- 1. 抓日期 ---
+            d_node = row.select_one('td.date')
+            if d_node and d_node.get_text(strip=True):
+                raw_d = d_node.get_text(strip=True).split('(')[0]
+                last_date = parse_date(raw_d)
+            
+            if not last_date: continue
+
+            game_sno = ""
+            no_link = row.select_one('td.game_no a')
+            if no_link and 'href' in no_link.attrs:
+                href = no_link['href']
+                match = re.search(r'gameSno=(\d+)', href)
+                if match:
+                    game_sno = match.group(1)
+
+            # --- 2. 抓隊伍與地點 ---
+            team_td = row.select_one('td.team')
+            if not team_td: continue 
+
+            aw_node = team_td.select_one('.name.away')
+            ho_node = team_td.select_one('.name.home')
+            if not aw_node or not ho_node: continue
+            
+            aw = aw_node.get_text(strip=True)
+            ho = ho_node.get_text(strip=True)
+            loc = (row.select_one('td.venue') or row.select_one('.place')).get_text(strip=True)
+
+            # --- 🧢 抓取投手資訊 ---
+            aw_p_node = row.select_one('.PlayerMatchup.away_sp .name')
+            ho_p_node = row.select_one('.PlayerMatchup.home_sp .name')
+            aw_p = aw_p_node.get_text(strip=True) if aw_p_node else ""
+            ho_p = ho_p_node.get_text(strip=True) if ho_p_node else ""
+
+            # --- 3. 🚩 狀態與比分判定 ---
+            row_classes = row.get('class', [])
+            raw_text = row.get_text(" ", strip=True)
+            st, ascore, hscore, gtime = "WAIT", "--", "--", ""
+            
+            # 🟢 這裡加入了延賽判定：檢查整列文字是否包含「延賽」
+            is_postponed = "延賽" in raw_text
+            is_finish = "final" in row_classes or any(x in raw_text for x in ["比賽結束", "Final", "結束"])
+            is_live = "live" in row_classes or any(x in raw_text for x in ["比賽中", "live"]) or "局" in raw_text
+
+            # 🟢 判斷順序：優先處理延賽
+            if is_postponed:
+                st, gtime = "延賽", "延賽"
+                ascore, hscore = "--", "--"
+            
+            elif is_finish:
+                st, gtime = "FINISH", "Final"
+                score_node = row.select_one('.score, .score_wrap')
+                if score_node:
+                    txt = score_node.get_text(strip=True)
+                    if ":" in txt:
+                        pts = txt.split(":")
+                        ascore, hscore = pts[0].strip(), pts[1].strip()
+                    elif "VS" in txt:
+                        pts = txt.split("VS")
+                        ascore, hscore = pts[0].strip(), pts[1].strip()
+            
+            elif is_live:
+                st = "LIVE"
+                score_node = row.select_one('.score, .score_wrap')
+                if score_node and ":" in score_node.get_text():
+                    pts = score_node.get_text(strip=True).split(":")
+                    ascore, hscore = pts[0].strip(), pts[1].strip()
+                m_inning = re.search(r'(\d+局[上下]?)', raw_text)
+                gtime = m_inning.group(1) if m_inning else "LIVE"
+            
+            else:
+                time_node = row.select_one('.time')
+                gtime = time_node.get_text(strip=True) if time_node else "18:35"
+
+            # --- 4. 存入/更新資料庫 ---
+            exist = Game.query.filter_by(game_date=last_date, away_team=aw, home_team=ho).first()
+            if not exist:
+                db.session.add(Game(
+                    game_date=last_date, game_sno=game_sno, game_time=gtime, 
+                    away_team=aw, away_score=ascore, away_pitcher=aw_p,
+                    home_team=ho, home_score=hscore, home_pitcher=ho_p,
+                    location=loc, game_status=st
+                ))
+            else:
+                exist.game_sno = game_sno
+                exist.away_score = ascore
+                exist.home_score = hscore
+                exist.game_time = gtime
+                exist.game_status = st  # 🔴 更新狀態 (包含 延賽)
+                exist.away_pitcher = aw_p
+                exist.home_pitcher = ho_p
+            
+            count += 1
+            print(f"✅ {last_date}: {aw} VS {ho} ({st})")
+
+        db.session.commit()
+        return jsonify({"status": "success", "month": target_m, "count": count})
+
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+import json
+
+@app.route('/api/update/standings')
+def update_standings():
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get("https://www.cpbl.com.tw/standings/season")
+        
+        # ✅ 改用明確等待，等到 table 真的出現才繼續
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.common.by import By
+        
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
+            )
+        except:
+            # 如果等不到，印出頁面源碼幫助偵錯
+            print("⚠️ 等待逾時，頁面源碼片段：")
+            print(driver.page_source[:3000])
+            return jsonify({"status": "error", "message": "頁面等待逾時"}), 500
+
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # ✅ 偵錯：先印出頁面裡找到哪些東西
+        all_tables = soup.select('table')
+        print(f"🔍 找到 {len(all_tables)} 張表格")
+        for i, t in enumerate(all_tables):
+            headers = [th.get_text(strip=True) for th in t.select('th')]
+            print(f"  表格 {i}: headers = {headers[:5]}")
+
+        # ✅ 改為直接抓所有 table，不依賴外層容器
+        all_tables = soup.select('table')
+        categories = ["h2h", "pitching", "batting"]
+        all_data = {}
+
+        for i, cat_key in enumerate(categories):
+            if i >= len(all_tables):
+                all_data[cat_key] = []
+                continue
+                
+            table = all_tables[i]
+            headers = [th.get_text(strip=True) for th in table.select('th')]
+            
+            rows_data = []
+            for tr in table.select('tbody tr'):
+                cells = [td.get_text(strip=True) for td in tr.select('td')]
+                if cells and len(cells) == len(headers):
+                    rows_data.append(dict(zip(headers, cells)))
+            
+            print(f"✅ {cat_key}: {len(rows_data)} 列, headers={headers}")
+            all_data[cat_key] = rows_data
+
+        with open('standings.json', 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, ensure_ascii=False, indent=4)
+
+        return jsonify({"status": "success", "data": all_data})
+
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+
+# 提供前端讀取戰績的 API
+@app.route('/api/get_standings')
+def get_standings_data():
+    try:
+        with open('standings.json', 'r', encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    except:
+        return jsonify({})
+
+def parse_generic_table(table_node):
+    """通用工具：將 HTML 表格轉為 List[Dict]"""
+    if not table_node: return []
+    headers = [th.get_text(strip=True) for th in table_node.select('thead th')]
+    rows = []
+    for tr in table_node.select('tbody tr'):
+        # 排除包含 <th> 的行（通常是小計或換投說明）
+        if tr.select('th') and len(tr.select('td')) == 0: continue
+        cells = [td.get_text(strip=True) for td in tr.select('td')]
+        if len(cells) > 0:
+            # 如果 cells 長度跟 headers 不對等，補齊標頭或過濾
+            rows.append(dict(zip(headers, cells)))
+    return rows
+
+def parse_line_score(soup):
+    """專門解析最上方的局數比分表 (Line Score)"""
+    # CPBL 的比分表通常在 .ScoreTable 或 table.score_table
+    table = soup.select_one('.ScoreTable') or soup.select_one('.score_table')
+    if not table: return []
+    
+    headers = [th.get_text(strip=True) for th in table.select('thead th')]
+    lines = []
+    for tr in table.select('tbody tr'):
+        team_name = tr.select_one('td.team, td:first-child').get_text(strip=True)
+        scores = [td.get_text(strip=True) for td in tr.select('td')]
+        # 我們要把隊名跟每一局的分數配對
+        lines.append(dict(zip(headers, scores)))
+    return lines
+
+@app.route('/api/game/box')
+def get_game_box():
+    sno = request.args.get('sno')
+    if not sno: return jsonify({"error": "No SNO"}), 400
+    
+    url = f"https://www.cpbl.com.tw/box/index?gameSno={sno}&year=2026&kindCode=A"
+    print(f"📊 正在解析詳細數據：{url}")
+    
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get(url)
+        time.sleep(3) 
+        
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # 🟢 1. 解析比分板 (截圖最上方那塊)
+        line_score = parse_line_score(soup)
+        
+        # 🟢 2. 解析數據表 (RecordTable)
+        # tables[0]: 客隊打擊, [1]: 主隊打擊, [2]: 客隊投球, [3]: 主隊投球
+        tables = soup.select('.RecordTable')
+        
+        box_data = {
+            "line_score": line_score,
+            "away_batting": parse_generic_table(tables[0]) if len(tables) > 0 else [],
+            "home_batting": parse_generic_table(tables[1]) if len(tables) > 1 else [],
+            "away_pitching": parse_generic_table(tables[2]) if len(tables) > 2 else [],
+            "home_pitching": parse_generic_table(tables[3]) if len(tables) > 3 else []
+        }
+        
+        return jsonify({
+            "status": "success", 
+            "url": url, 
+            "data": box_data
+        })
+        
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+
+import os
+
+@app.route('/api/init_pool')
+def init_player_pool():
+    url = "https://www.cpbl.com.tw/player"
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get(url)
+        time.sleep(3)
+        
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        player_links = soup.select('.PlayersList a')
+        print(f"--- 偵錯資訊：抓到 {len(player_links)} 個球員連結 ---")
+
+        # 讀取已存的進度，避免中斷後重頭來
+        if os.path.exists('players_pool.json'):
+            with open('players_pool.json', 'r', encoding='utf-8') as f:
+                master_pool = json.load(f)
+            done_names = {p['name'] for p in master_pool}
+            print(f"--- 繼續上次進度，已有 {len(master_pool)} 筆 ---")
+        else:
+            master_pool = []
+            done_names = set()
+
+        for item in player_links:
+            name = item.get_text(strip=True)
+            
+            # 已抓過就跳過
+            if name in done_names:
+                print(f"⏭️ 跳過 {name}")
+                continue
+
+            href = item.get('href', '')
+            if href and not href.startswith('http'):
+                href = "https://www.cpbl.com.tw" + href
+
+            team = ''
+            position = ''
+            if href:
+                try:
+                    driver.get(href)
+                    time.sleep(2)  # 可以改成 random.uniform(1.5, 3.5) 更安全
+                    player_soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+                    h2 = player_soup.select_one('#Content .PageTitle h2')
+                    if h2:
+                        for span in h2.select('span'):
+                            span.decompose()
+                        team = h2.get_text(strip=True)
+
+                    pos_tag = player_soup.select_one('dd.pos .desc')
+                    position = pos_tag.get_text(strip=True) if pos_tag else ''
+
+                except Exception as e:
+                    print(f"抓 {name} 失敗：{e}")
+
+            if name:
+                master_pool.append({
+                    "name": name,
+                    "team": team,
+                    "position": position,
+                })
+                done_names.add(name)
+                
+                # 每抓一筆就存一次，中斷也不怕
+                with open('players_pool.json', 'w', encoding='utf-8') as f:
+                    json.dump(master_pool, f, ensure_ascii=False, indent=4)
+
+            print(f"✅ {name} | {team} | {position}")
+
+        return jsonify({"status": "success", "total": len(master_pool)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if driver: driver.quit()
+
+@app.route('/api/get_player_pool')
+def get_player_pool():
+    try:
+        # 讀取你之前抓好的 json 檔案
+        with open('players_pool.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return jsonify(data)
+    except FileNotFoundError:
+        return jsonify({"error": "找不到球員池檔案，請先執行初始化"}), 404
+
+import requests
+import json
+
+@app.route('/api/get_news')
+def get_news():
+    try:
+        # 直接讀取手動維護的 JSON 檔案
+        with open('news.json', 'r', encoding='utf-8') as f:
+            news_data = json.load(f)
+        return jsonify(news_data)
+    except Exception as e:
+        return jsonify([{"title": "新聞讀取失敗", "date": "-", "tag": "event", "type": "系統"}])
+if __name__ == '__main__':
+    # debug=True 可以在你改代碼時自動重啟，非常方便
+    app.run(debug=True, port=5000)
