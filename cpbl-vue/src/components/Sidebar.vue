@@ -30,6 +30,8 @@ const menuItems = [
   { key: 'standings', label: '球隊戰績', icon: 'fa-solid fa-ranking-star' },
   { key: 'stats', label: '數據統計', icon: 'fa-solid fa-chart-line' },
   { key: 'gacha', label: '球員抽卡', icon: 'fa-solid fa-box-open' },
-  { key: 'lineup', label: '我的打線', icon: 'fa-solid fa-users-rectangle' }
+  { key: 'collection', label: '球員收藏', icon: 'fa-solid fa-layer-group' },
+  { key: 'lineup', label: '我的打線', icon: 'fa-solid fa-users-rectangle' },
+  { key: 'sync', label: '同步中心', icon: 'fa-solid fa-arrows-rotate' }
 ]
 </script>

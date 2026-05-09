@@ -59,7 +59,7 @@
       <span>點擊查看逐局比分與打擊數據</span>
     </div>
 
-    <div class="game-actions" @click.stop>
+    <div v-if="showActions" class="game-actions" @click.stop>
       <button
         class="game-action-btn heart"
         :class="{ active: favorited }"
@@ -91,6 +91,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { API_BASE } from '../api/cpblApi'
 
 const props = defineProps({
   game: {
@@ -112,6 +113,10 @@ const props = defineProps({
   ticketCount: {
     type: Number,
     default: 0
+  },
+  showActions: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -122,17 +127,19 @@ defineEmits([
   'open-highlight'
 ])
 
+const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const TEAM_LOGOS = {
-  '中信兄弟': 'http://127.0.0.1:5000/static/image/teams/brothers.png',
-  '味全龍': 'http://127.0.0.1:5000/static/image/teams/dragons.png',
-  '樂天桃猿': 'http://127.0.0.1:5000/static/image/teams/monkeys.png',
-  '統一7-ELEVEn獅': 'http://127.0.0.1:5000/static/image/teams/lions.png',
-  '富邦悍將': 'http://127.0.0.1:5000/static/image/teams/guardians.png',
-  '台鋼雄鷹': 'http://127.0.0.1:5000/static/image/teams/hawks.png'
+  '中信兄弟': 'brothers.png',
+  '味全龍': 'dragons.png',
+  '樂天桃猿': 'monkeys.png',
+  '統一7-ELEVEn獅': 'lions.png',
+  '富邦悍將': 'guardians.png',
+  '台鋼雄鷹': 'hawks.png'
 }
 
 function getTeamLogo(team) {
-  return TEAM_LOGOS[team] || 'http://127.0.0.1:5000/static/image/teams/default.png'
+  const fileName = TEAM_LOGOS[team] || 'default.png'
+  return `${ASSET_BASE}/static/image/teams/${fileName}`
 }
 
 const statusText = computed(() => {

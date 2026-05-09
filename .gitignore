@@ -1,4 +1,11 @@
-node_modules 
-dist 
-.env 
-.DS_Store 
+node_modules
+dist
+.env
+.DS_Store
+.venv
+__pycache__
+*.pyc
+cpbl-backend/instance/*.db
+cpbl-backend/standings.json
+cpbl-backend/players_pool.json
+cpbl-vue/dist

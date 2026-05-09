@@ -1,47 +1,28 @@
 import re, time, json, traceback
-from datetime import datetime
 from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
-import time
-import traceback
-# ✅ 修改後
-from flask import Flask, render_template, jsonify, request
-from flask import jsonify
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sqlalchemy import or_
-from flask import Flask, render_template, jsonify, request # 1. 確保有匯入
+from extensions import db
+from models import Game
+from services.cpbl_official import (
+    NEWS_FALLBACK,
+    TOP_STATS_SOURCE_URL,
+    fetch_cpbl_news,
+    fetch_cpbl_top_stats,
+)
 
 app = Flask(__name__)
 CORS(app)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cpbl_data.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-class Game(db.Model):
-    id          = db.Column(db.Integer, primary_key=True)
-    game_date   = db.Column(db.String(10))
-    game_sno = db.Column(db.String(10))
-    game_time   = db.Column(db.String(20), default="") 
-    away_team   = db.Column(db.String(100))
-    away_score  = db.Column(db.String(10), default="--")
-    away_pitcher = db.Column(db.String(50), default="") # 🔴 新增客隊投手
-    home_team   = db.Column(db.String(100))
-    home_score  = db.Column(db.String(10), default="--")
-    home_pitcher = db.Column(db.String(50), default="") # 🔴 新增主隊投手
-    location    = db.Column(db.String(100), default="未知")
-    game_status = db.Column(db.String(20), default="")
-    away_line = db.Column(db.String(200), default="")
-    home_line = db.Column(db.String(200), default="")
-    away_rhe = db.Column(db.String(20), default="0,0,0") # 格式: "R,H,E"
-    home_rhe = db.Column(db.String(20), default="0,0,0")
+db.init_app(app)
 
 with app.app_context():
     db.create_all()
@@ -327,9 +308,6 @@ def update_schedule():
     finally:
         if driver: driver.quit()
 
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
 @app.route('/api/update/today')
 def update_today():
     driver = None
@@ -611,7 +589,6 @@ def update_specific_month():
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         if driver: driver.quit()
-import json
 
 @app.route('/api/update/standings')
 def update_standings():
@@ -621,10 +598,6 @@ def update_standings():
         driver.get("https://www.cpbl.com.tw/standings/season")
         
         # ✅ 改用明確等待，等到 table 真的出現才繼續
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.common.by import By
-        
         try:
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
@@ -753,7 +726,6 @@ def get_game_box():
         })
         
     except Exception as e:
-        import traceback
         print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
@@ -846,18 +818,47 @@ def get_player_pool():
     except FileNotFoundError:
         return jsonify({"error": "找不到球員池檔案，請先執行初始化"}), 404
 
-import requests
-import json
+@app.route('/api/top_stats')
+def get_top_stats():
+    limit = request.args.get("limit", default=10, type=int)
+    limit = max(1, min(limit, 20))
+
+    try:
+        return jsonify({
+            "status": "success",
+            "source": TOP_STATS_SOURCE_URL,
+            "data": fetch_cpbl_top_stats(limit),
+        })
+    except Exception as e:
+        print(f"排行榜抓取失敗：{e}")
+        return jsonify({
+            "status": "error",
+            "source": TOP_STATS_SOURCE_URL,
+            "data": [],
+            "message": str(e),
+        }), 500
 
 @app.route('/api/get_news')
 def get_news():
+    limit = request.args.get("limit", default=12, type=int)
+    limit = max(1, min(limit, 30))
+
     try:
-        # 直接讀取手動維護的 JSON 檔案
-        with open('news.json', 'r', encoding='utf-8') as f:
-            news_data = json.load(f)
-        return jsonify(news_data)
+        news_data = fetch_cpbl_news(limit)
+        if news_data:
+            return jsonify(news_data)
     except Exception as e:
-        return jsonify([{"title": "新聞讀取失敗", "date": "-", "tag": "event", "type": "系統"}])
+        print(f"新聞抓取失敗，改用備援資料：{e}")
+
+    try:
+        with open('news.json', 'r', encoding='utf-8') as f:
+            local_news = json.load(f)
+        if isinstance(local_news, list) and local_news:
+            return jsonify(local_news[:limit])
+    except Exception:
+        pass
+
+    return jsonify(NEWS_FALLBACK[:limit])
 if __name__ == '__main__':
     # debug=True 可以在你改代碼時自動重啟，非常方便
     app.run(debug=True, port=5000)

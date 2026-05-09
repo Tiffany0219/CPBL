@@ -6,10 +6,17 @@
         <h2>球員抽卡</h2>
         <p>從球員池隨機抽取球員卡，建立更有互動性的中職資料體驗。</p>
       </div>
-      <button class="btn-primary" :disabled="loading" @click="drawCard">
-        <i :class="loading ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-bolt'"></i>
-        {{ loading ? '抽卡中' : '立即抽卡' }}
-      </button>
+      <div class="lineup-header-actions">
+        <button class="btn-soft" type="button" @click="$emit('change-page', 'collection')">
+          <i class="fa-solid fa-layer-group"></i>
+          查看收藏冊
+        </button>
+
+        <button class="btn-primary" :disabled="loading" @click="drawCard">
+          <i :class="loading ? 'fa-solid fa-circle-notch fa-spin' : 'fa-solid fa-bolt'"></i>
+          {{ loading ? '抽卡中' : '立即抽卡' }}
+        </button>
+      </div>
     </section>
 
     <section class="gacha-layout">
@@ -35,7 +42,15 @@
             <strong>{{ isRare ? 'LEGEND' : 'STANDARD' }}</strong>
           </div>
           <div class="player-photo-wrap">
-            <img :src="playerImage" :alt="cleanName" @error="useDefaultImage" />
+            <img
+              v-if="!imageMissing"
+              :src="playerImage"
+              :alt="cleanName"
+              @error="imageMissing = true"
+            />
+            <div v-else class="player-photo-fallback">
+              {{ playerInitials }}
+            </div>
           </div>
           <div class="player-card-info">
             <h3>{{ cleanName }}</h3>
@@ -60,38 +75,32 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { cpblApi } from '../api/cpblApi'
+import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
+import {
+  addPlayerToCollection,
+  cleanPlayerName,
+  playerInitials as getPlayerInitials,
+  teamColor as getTeamColor
+} from '../composables/usePlayerCollection'
+
+defineEmits(['change-page'])
 
 const keyword = ref('')
 const player = ref(null)
 const loading = ref(false)
 const error = ref('')
-const imageSrc = ref('')
+const imageMissing = ref(false)
+const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 
-const teamColors = {
-  '台鋼雄鷹': '#006847',
-  '味全龍': '#c8102e',
-  '富邦悍將': '#004b8d',
-  '中信兄弟': '#d8a900',
-  '統一7-ELEVEn獅': '#f58220',
-  '樂天桃猿': '#7a0019'
-}
-
-const cleanName = computed(() => (player.value?.name || '未知球員').replace(/\*/g, ''))
+const cleanName = computed(() => cleanPlayerName(player.value))
 const isRare = computed(() => cleanName.value.includes('頌恩'))
-const teamColor = computed(() => teamColors[player.value?.team] || '#334155')
-const playerImage = computed(() => imageSrc.value || `http://127.0.0.1:5000/static/image/players/${cleanName.value}.png`)
-
-function useDefaultImage(event) {
-  event.target.src = 'http://127.0.0.1:5000/static/image/players/default_player.png'
-}
+const teamColor = computed(() => getTeamColor(player.value?.team))
+const playerInitials = computed(() => getPlayerInitials(player.value))
+const playerImage = computed(() => `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`)
 
 function saveToInventory(p) {
-  const key = (p.name || '未知球員').replace(/\*/g, '')
-  const inventory = JSON.parse(localStorage.getItem('my_cpbl_collection')) || {}
-  inventory[key] = inventory[key] ? { ...inventory[key], count: inventory[key].count + 1 } : { ...p, count: 1 }
-  localStorage.setItem('my_cpbl_collection', JSON.stringify(inventory))
+  addPlayerToCollection(p)
 }
 
 async function getPool() {
@@ -104,7 +113,7 @@ async function drawCard() {
   loading.value = true
   error.value = ''
   player.value = null
-  imageSrc.value = ''
+  imageMissing.value = false
   try {
     const players = await getPool()
     const filtered = players.filter(p => {
@@ -115,6 +124,7 @@ async function drawCard() {
     const pool = filtered.length ? filtered : players
     const luckyPlayer = pool[Math.floor(Math.random() * pool.length)]
     player.value = luckyPlayer
+    imageMissing.value = false
     saveToInventory(luckyPlayer)
   } catch {
     error.value = '請確認 Flask 是否啟動，以及 /api/get_player_pool 是否正常回傳資料。'
@@ -131,6 +141,7 @@ async function searchPlayer() {
   loading.value = true
   error.value = ''
   player.value = null
+  imageMissing.value = false
   try {
     const players = await getPool()
     const found = players.find(p => (p.name || '').replace(/\*/g, '').includes(keyword.value.trim()))
@@ -139,6 +150,7 @@ async function searchPlayer() {
       return
     }
     player.value = found
+    imageMissing.value = false
   } catch {
     error.value = '搜尋失敗，請確認球員 API 是否正常。'
   } finally {
