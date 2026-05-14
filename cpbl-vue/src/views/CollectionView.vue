@@ -120,7 +120,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { API_BASE } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import {
@@ -134,6 +134,7 @@ import {
 } from '../composables/usePlayerCollection'
 
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
+const notify = inject('notify', () => {})
 const collection = ref([])
 const keyword = ref('')
 const teamFilter = ref('')
@@ -209,9 +210,9 @@ async function copyPlayerName(player) {
 
   try {
     await navigator.clipboard.writeText(name)
-    alert(`已複製 ${name}`)
+    notify({ type: 'success', title: '已複製', message: `${name} 已複製到剪貼簿。` })
   } catch {
-    alert(name)
+    notify({ type: 'info', title: '球員姓名', message: name })
   }
 }
 

@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,7 +15,7 @@ DEFAULT_HEADERS = {
 NEWS_FALLBACK = [
     {
         "title": "歡迎使用 GoBase 中職數據平台",
-        "date": "2026",
+        "date": str(datetime.now().year),
         "category": "系統公告",
         "tag": "系統",
         "type": "系統",

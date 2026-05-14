@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5000/api'
+export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5100/api'
 
 function buildQuery(params = {}) {
   const search = new URLSearchParams()
@@ -19,6 +19,10 @@ async function request(path, options = {}) {
 }
 
 export const cpblApi = {
+  getHealth() {
+    return request('/health')
+  },
+
   getGames(params = {}) {
     return request(`/games${buildQuery(params)}`)
   },
@@ -43,12 +47,16 @@ export const cpblApi = {
     return request('/update/today')
   },
 
-  updateMonth(month) {
-    return request(`/update/month?m=${month}`)
+  updateMonth(month, year) {
+    return request(`/update/month${buildQuery({ m: month, year })}`)
   },
 
-  updateSchedule() {
-    return request('/update/schedule')
+  updateSchedule(params = {}) {
+    return request(`/update/schedule${buildQuery(params)}`)
+  },
+
+  updateGameExtras(params = {}) {
+    return request(`/update/game_extras${buildQuery(params)}`)
   },
 
   updateStandings() {

@@ -1,13 +1,17 @@
+import os
 import re, time, json, traceback
+from datetime import datetime
+from pathlib import Path
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from extensions import db
 from models import Game
 from services.cpbl_official import (
@@ -17,15 +21,41 @@ from services.cpbl_official import (
     fetch_cpbl_top_stats,
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ.get("CPBL_DATA_DIR", BASE_DIR)).resolve()
+SEASON_YEAR = int(os.environ.get("CPBL_SEASON_YEAR", datetime.now().year))
+STANDINGS_PATH = DATA_DIR / "standings.json"
+PLAYERS_POOL_PATH = DATA_DIR / "players_pool.json"
+
 app = Flask(__name__)
 CORS(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cpbl_data.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{BASE_DIR / 'instance' / 'cpbl_data.db'}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
+GAME_EXTRA_COLUMNS = {
+    "winning_pitcher": "VARCHAR(50) DEFAULT ''",
+    "losing_pitcher": "VARCHAR(50) DEFAULT ''",
+    "save_pitcher": "VARCHAR(50) DEFAULT ''",
+    "mvp": "VARCHAR(50) DEFAULT ''",
+    "mvp_team": "VARCHAR(100) DEFAULT ''",
+    "mvp_note": "VARCHAR(120) DEFAULT ''",
+}
+
+def ensure_game_schema():
+    existing = {
+        row[1]
+        for row in db.session.execute(text("PRAGMA table_info(game)")).fetchall()
+    }
+    for column, column_type in GAME_EXTRA_COLUMNS.items():
+        if column not in existing:
+            db.session.execute(text(f"ALTER TABLE game ADD COLUMN {column} {column_type}"))
+    db.session.commit()
+
 with app.app_context():
     db.create_all()
+    ensure_game_schema()
 
 def make_driver():
     opts = Options()
@@ -36,15 +66,208 @@ def make_driver():
     opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
     return webdriver.Chrome(options=opts)
 
+def cpbl_box_url(game_sno, year=None):
+    target_year = year or SEASON_YEAR
+    return f"https://www.cpbl.com.tw/box/index?gameSno={game_sno}&year={target_year}&kindCode=A"
+
+def read_json_file(path, fallback):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return fallback
+
+def write_json_file(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
 def parse_date(txt):
     m = re.search(r'(\d{1,2})/(\d{1,2})', txt)
     if m:
         parts = txt.split('/')
-        # 如果是 2026/04/16
+        # 如果是 YYYY/MM/DD
         if len(parts) >= 3: return f"{parts[1].zfill(2)}/{parts[2][:2].zfill(2)}"
         # 如果是 04/16
         return f"{m.group(1).zfill(2)}/{m.group(2).zfill(2)}"
     return ""
+
+def clean_player_name(value):
+    if value is None:
+        return ""
+    value = str(value).replace("\u3000", " ").strip()
+    value = re.sub(r'\s+', '', value)
+    return "" if value in {"", "-", "--", "None", "null"} else value
+
+def intish(value, default=0):
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+def format_pitching_innings(outs, third_outs):
+    outs = intish(outs)
+    third_outs = intish(third_outs)
+    if third_outs:
+        return f"{outs} {third_outs}/3"
+    return str(outs)
+
+def parse_json_payload(value, fallback):
+    if not value:
+        return fallback
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+def fetch_cpbl_game_payload(game_sno, year=None, kind_code="A"):
+    target_year = year or SEASON_YEAR
+    url = cpbl_box_url(game_sno, target_year)
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Referer": url,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    page = session.get(url, headers=headers, timeout=20)
+    page.raise_for_status()
+
+    soup = BeautifulSoup(page.text, 'html.parser')
+    token_node = soup.find('input', {'name': '__RequestVerificationToken'})
+    token = token_node.get('value') if token_node else ""
+    post_data = {
+        "__RequestVerificationToken": token,
+        "GameSno": str(game_sno),
+        "KindCode": kind_code,
+        "Year": str(target_year),
+        "PrevOrNext": "",
+        "PresentStatus": "",
+    }
+    res = session.post(
+        "https://www.cpbl.com.tw/box/getlive",
+        headers=headers,
+        data=post_data,
+        timeout=25,
+    )
+    res.raise_for_status()
+    payload = res.json()
+    if not payload.get("Success"):
+        raise ValueError("CPBL 官方 getlive 回傳失敗")
+
+    return {
+        "game_details": parse_json_payload(payload.get("GameDetailJson"), []),
+        "curt_game_detail": parse_json_payload(payload.get("CurtGameDetailJson"), {}),
+        "scoreboards": parse_json_payload(payload.get("ScoreboardJson"), []),
+        "battings": parse_json_payload(payload.get("BattingJson"), []),
+        "pitchings": parse_json_payload(payload.get("PitchingJson"), []),
+        "raw": payload,
+        "source": url,
+    }
+
+def find_pitcher_by_role(pitchings, visiting_home_type, role="先發"):
+    side = str(visiting_home_type)
+    candidates = [p for p in pitchings if str(p.get("VisitingHomeType")) == side]
+    for pitcher in candidates:
+        if pitcher.get("RoleType") == role:
+            return clean_player_name(pitcher.get("PitcherName"))
+    return clean_player_name(candidates[0].get("PitcherName")) if candidates else ""
+
+def mvp_note_from_detail(detail):
+    if clean_player_name(detail.get("PitcherName")):
+        innings = format_pitching_innings(
+            detail.get("InningPitchedCnt"),
+            detail.get("InningPitchedDiv3Cnt"),
+        )
+        strikeouts = intish(detail.get("StrikeOutCnt"))
+        runs = intish(detail.get("RunCnt"))
+        return f"投球 {innings} 局 / {strikeouts}K / {runs} 失分"
+
+    hits = intish(detail.get("HittingCnt"))
+    rbi = intish(detail.get("RunBattedInCnt"))
+    runs = intish(detail.get("ScoreCnt"))
+    homers = intish(detail.get("HomeRunCnt"))
+    parts = []
+    if hits:
+        parts.append(f"{hits} 安")
+    if rbi:
+        parts.append(f"{rbi} 打點")
+    if runs:
+        parts.append(f"{runs} 得分")
+    if homers:
+        parts.append(f"{homers} 轟")
+    return " / ".join(parts) or "官方 MVP"
+
+def build_line_data_from_scoreboards(scoreboards):
+    line_data = {"away": [], "home": [], "away_rhe": [], "home_rhe": []}
+    for side, key in (("1", "away"), ("2", "home")):
+        rows = [row for row in scoreboards if str(row.get("VisitingHomeType")) == side]
+        rows.sort(key=lambda row: intish(row.get("InningSeq")))
+        if not rows:
+            continue
+        scores = [str(intish(row.get("ScoreCnt"))) for row in rows]
+        hits = sum(intish(row.get("HittingCnt")) for row in rows)
+        errors = sum(intish(row.get("ErrorCnt")) for row in rows)
+        runs = sum(intish(row.get("ScoreCnt")) for row in rows)
+        line_data[key] = scores
+        line_data[f"{key}_rhe"] = [str(runs), str(hits), str(errors)]
+    return line_data
+
+def players_from_battings(battings, visiting_home_type):
+    rows = [b for b in battings if str(b.get("VisitingHomeType")) == str(visiting_home_type)]
+    return [{
+        "name": clean_player_name(b.get("HitterName")),
+        "ab": str(intish(b.get("HitCnt"))),
+        "h": str(intish(b.get("HittingCnt"))),
+        "rbi": str(intish(b.get("RunBattedINCnt") or b.get("RunBattedInCnt"))),
+    } for b in rows if clean_player_name(b.get("HitterName"))]
+
+def extract_official_game_extras(payload, game=None):
+    detail = payload.get("curt_game_detail") or {}
+    pitchings = payload.get("pitchings") or []
+    mvp_side = str(detail.get("MvpVisitingHomeType") or "")
+    away_team = game.away_team if game else clean_player_name(detail.get("VisitingTeamName"))
+    home_team = game.home_team if game else clean_player_name(detail.get("HomeTeamName"))
+
+    mvp_name = clean_player_name(detail.get("HitterName")) or clean_player_name(detail.get("PitcherName"))
+    mvp_team = ""
+    if mvp_side == "1":
+        mvp_team = away_team
+    elif mvp_side == "2":
+        mvp_team = home_team
+
+    return {
+        "away_pitcher": clean_player_name(detail.get("VisitingFirstMover")) or find_pitcher_by_role(pitchings, "1"),
+        "home_pitcher": clean_player_name(detail.get("HomeFirstMover")) or find_pitcher_by_role(pitchings, "2"),
+        "winning_pitcher": clean_player_name(detail.get("WinningPitcherName")),
+        "losing_pitcher": clean_player_name(detail.get("LosePitcherName")),
+        "save_pitcher": clean_player_name(detail.get("CloserPitcherName")),
+        "mvp": mvp_name,
+        "mvp_team": mvp_team,
+        "mvp_note": mvp_note_from_detail(detail) if mvp_name else "",
+        "away_score": str(intish(detail.get("VisitingTotalScore"), "")) if detail.get("VisitingTotalScore") is not None else "",
+        "home_score": str(intish(detail.get("HomeTotalScore"), "")) if detail.get("HomeTotalScore") is not None else "",
+        "status": "FINISH" if intish(detail.get("GameStatus")) == 3 else "",
+    }
+
+def apply_game_extras(game, extras):
+    for field in [
+        "away_pitcher", "home_pitcher", "winning_pitcher", "losing_pitcher",
+        "save_pitcher", "mvp", "mvp_team", "mvp_note"
+    ]:
+        value = extras.get(field)
+        if value:
+            setattr(game, field, value)
+    if extras.get("away_score") != "":
+        game.away_score = extras["away_score"]
+    if extras.get("home_score") != "":
+        game.home_score = extras["home_score"]
+    if extras.get("status"):
+        game.game_status = extras["status"]
+        game.game_time = "Final"
 
 # --- 格式化輔助函數：確保數據轉成陣列 ---
 # --- 格式化輔助函數：增加球員參數 ---
@@ -62,6 +285,14 @@ def format_game_detail(game, away_players=None, home_players=None):
         "home_line": to_list(game.home_line),
         "away_rhe": to_list(game.away_rhe),
         "home_rhe": to_list(game.home_rhe),
+        "away_pitcher": game.away_pitcher,
+        "home_pitcher": game.home_pitcher,
+        "winning_pitcher": game.winning_pitcher,
+        "losing_pitcher": game.losing_pitcher,
+        "save_pitcher": game.save_pitcher,
+        "mvp": game.mvp,
+        "mvp_team": game.mvp_team,
+        "mvp_note": game.mvp_note,
         # 🟢 重點：如果呼叫時有給球員名單就用它，沒有就給空陣列
         "away_players": away_players if away_players is not None else [],
         "home_players": home_players if home_players is not None else []
@@ -136,11 +367,41 @@ def get_game_detail(game_id):
     game = db.session.get(Game, game_id)
     if not game:
         return jsonify({"error": "找不到比賽"}), 404
+    if not game.game_sno:
+        detail = format_game_detail(game)
+        detail["source"] = "cache"
+        detail["message"] = "這場比賽缺少 game_sno，請先同步該月份賽程。"
+        return jsonify(detail)
+
+    try:
+        payload = fetch_cpbl_game_payload(game.game_sno)
+        line = build_line_data_from_scoreboards(payload["scoreboards"])
+        a_p = players_from_battings(payload["battings"], "1")
+        h_p = players_from_battings(payload["battings"], "2")
+        extras = extract_official_game_extras(payload, game)
+
+        if any(line.values()) or extras.get("mvp") or extras.get("away_pitcher") or extras.get("home_pitcher"):
+            if line["away"]:
+                game.away_line = ",".join(line["away"])
+            if line["home"]:
+                game.home_line = ",".join(line["home"])
+            if line["away_rhe"]:
+                game.away_rhe = ",".join(line["away_rhe"])
+            if line["home_rhe"]:
+                game.home_rhe = ",".join(line["home_rhe"])
+            apply_game_extras(game, extras)
+            db.session.commit()
+
+        detail = format_game_detail(game, a_p, h_p)
+        detail["source"] = payload["source"]
+        return jsonify(detail)
+    except Exception as e:
+        print(f"⚠️ 官方 JSON 解析失敗，改用 Selenium 備援: {e}")
 
     driver = None
     try:
         driver = make_driver()
-        url = f"https://www.cpbl.com.tw/box/index?gameSno={game.game_sno}&year=2026&kindCode=A"
+        url = cpbl_box_url(game.game_sno)
         driver.get(url)
 
         # 🟢 強制點擊「詳細紀錄」標籤
@@ -179,7 +440,7 @@ def get_game_detail(game_id):
             print(f"✅ 成功更新資料庫：客隊 {len(a_p)} 人")
 
         # 🟢 回傳 JSON 給前端
-        return jsonify({
+        detail = {
             "away_team": game.away_team,
             "home_team": game.home_team,
             # 如果還沒開始，回傳空陣列讓前端顯示「尚未開始」
@@ -188,8 +449,18 @@ def get_game_detail(game_id):
             "away_rhe": line["away_rhe"] if is_started else ["0", "0", "0"],
             "home_rhe": line["home_rhe"] if is_started else ["0", "0", "0"],
             "away_players": a_p, # 若沒開始，parse_game_box 會回傳 []
-            "home_players": h_p
-        })
+            "home_players": h_p,
+            "away_pitcher": game.away_pitcher,
+            "home_pitcher": game.home_pitcher,
+            "winning_pitcher": game.winning_pitcher,
+            "losing_pitcher": game.losing_pitcher,
+            "save_pitcher": game.save_pitcher,
+            "mvp": game.mvp,
+            "mvp_team": game.mvp_team,
+            "mvp_note": game.mvp_note,
+            "source": "selenium",
+        }
+        return jsonify(detail)
 
     except Exception as e:
         print(f"❌ 錯誤: {e}")
@@ -199,11 +470,15 @@ def get_game_detail(game_id):
 
 @app.route('/api/update/schedule')
 def update_schedule():
+    target_m = request.args.get('m', default=datetime.now().month, type=int)
+    target_year = request.args.get('year', default=SEASON_YEAR, type=int)
+    if not 1 <= target_m <= 12:
+        return jsonify({"status": "error", "message": "月份必須介於 1 到 12"}), 400
+
     driver = None
     try:
         driver = make_driver()
-        # 直接進入 4 月賽程清單模式
-        driver.get("https://www.cpbl.com.tw/schedule?&GameType=1&Month=04&Year=2026") 
+        driver.get(f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}")
         time.sleep(10)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
@@ -220,6 +495,13 @@ def update_schedule():
                 # 這裡使用你原本的 parse_date 函數
                 last_date = parse_date(d_node.get_text(strip=True))
             if not last_date: continue
+
+            game_sno = ""
+            no_link = row.select_one('td.game_no a, a[href*="gameSno="]')
+            if no_link and 'href' in no_link.attrs:
+                match = re.search(r'gameSno=(\d+)', no_link['href'])
+                if match:
+                    game_sno = match.group(1)
 
             # 2. 抓隊伍與地點
             team_td = row.select_one('td.team')
@@ -290,18 +572,23 @@ def update_schedule():
             exist = Game.query.filter_by(game_date=last_date, away_team=aw, home_team=ho).first()
             if not exist:
                 db.session.add(Game(
-                    game_date=last_date, game_time=gtime, 
+                    game_date=last_date, game_sno=game_sno, game_time=gtime,
                     away_team=aw, away_score=ascore, away_pitcher=aw_p,
                     home_team=ho, home_score=hscore, home_pitcher=ho_p,
                     location=loc, game_status=st
                 ))
             else:
+                exist.game_sno = game_sno or exist.game_sno
                 exist.away_score, exist.home_score = ascore, hscore
                 exist.game_time, exist.game_status = gtime, st
-                exist.away_pitcher, exist.home_pitcher = aw_p, ho_p
+                if aw_p:
+                    exist.away_pitcher = aw_p
+                if ho_p:
+                    exist.home_pitcher = ho_p
+            count += 1
             
         db.session.commit()
-        return jsonify({"status": "success", "count": count})
+        return jsonify({"status": "success", "year": target_year, "month": target_m, "count": count})
     except Exception as e:
         print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -319,7 +606,7 @@ def update_today():
         
         # 1. 確認日期
         d_node = soup.select_one('.date_selected .date, .date_select .date')
-        anchor_date = parse_date(d_node.get_text()) if d_node else "04/17"
+        anchor_date = parse_date(d_node.get_text()) if d_node else datetime.now().strftime("%m/%d")
 
         # 🟢 2. 使用你提供的正確對照表
         team_map = {
@@ -382,7 +669,10 @@ def update_today():
                 ).first()
 
                 if game:
-                    game.away_pitcher, game.home_pitcher = aw_p, ho_p
+                    if aw_p:
+                        game.away_pitcher = aw_p
+                    if ho_p:
+                        game.home_pitcher = ho_p
                     
                     # 🟢 6. 安全抓取比分 (不再用 int 轉型，防止 VS. 澄清湖 報錯)
                     score_node = item.select_one('.score, .num')
@@ -411,7 +701,60 @@ def update_today():
     finally:
         if driver: driver.quit()
 
-from sqlalchemy import or_  # 🔴 務必確認有這一行
+@app.route('/api/update/game_extras')
+def update_game_extras():
+    target_m = request.args.get('m', type=int)
+    target_year = request.args.get('year', default=SEASON_YEAR, type=int)
+    limit = request.args.get('limit', default=30, type=int)
+    limit = max(1, min(limit, 90))
+
+    q = Game.query.filter(Game.game_status == "FINISH").order_by(Game.game_date.asc())
+    if target_m:
+        prefix = f"{target_m:02d}/"
+        q = q.filter(Game.game_date.like(f"{prefix}%"))
+
+    games = q.limit(limit).all()
+    updated = 0
+    skipped = 0
+    failed = []
+
+    for game in games:
+        if not game.game_sno:
+            skipped += 1
+            continue
+        try:
+            payload = fetch_cpbl_game_payload(game.game_sno, target_year)
+            extras = extract_official_game_extras(payload, game)
+            line = build_line_data_from_scoreboards(payload["scoreboards"])
+
+            if line["away"]:
+                game.away_line = ",".join(line["away"])
+            if line["home"]:
+                game.home_line = ",".join(line["home"])
+            if line["away_rhe"]:
+                game.away_rhe = ",".join(line["away_rhe"])
+            if line["home_rhe"]:
+                game.home_rhe = ",".join(line["home_rhe"])
+            apply_game_extras(game, extras)
+            updated += 1
+            print(f"✅ 補抓完成：{game.game_date} {game.away_team} vs {game.home_team} MVP={game.mvp}")
+        except Exception as e:
+            failed.append({
+                "id": game.id,
+                "game_sno": game.game_sno,
+                "matchup": f"{game.away_team} vs {game.home_team}",
+                "message": str(e),
+            })
+
+    db.session.commit()
+    return jsonify({
+        "status": "success" if not failed else "partial",
+        "year": target_year,
+        "month": target_m,
+        "updated": updated,
+        "skipped": skipped,
+        "failed": failed,
+    })
 
 @app.route('/api/games')
 def get_games():
@@ -442,6 +785,12 @@ def get_games():
         "home_score": g.home_score,
         "away_pitcher": g.away_pitcher, 
         "home_pitcher": g.home_pitcher, 
+        "winning_pitcher": g.winning_pitcher,
+        "losing_pitcher": g.losing_pitcher,
+        "save_pitcher": g.save_pitcher,
+        "mvp": g.mvp,
+        "mvp_team": g.mvp_team,
+        "mvp_note": g.mvp_note,
         "location": g.location,
         "status": g.game_status
     } for g in q.all()])
@@ -450,32 +799,24 @@ def get_games():
 def update_specific_month():
     target_m = request.args.get('m', type=int)
     if not target_m: return jsonify({"status": "error", "message": "月份缺失"}), 400
+    if not 1 <= target_m <= 12:
+        return jsonify({"status": "error", "message": "月份必須介於 1 到 12"}), 400
+    target_year = request.args.get('year', default=SEASON_YEAR, type=int)
     
-    print(f"--- 🚀 執行升級版同步：目標 {target_m} 月 ---")
+    print(f"--- 🚀 執行升級版同步：目標 {target_year}/{target_m:02d} ---")
     driver = None
     try:
         driver = make_driver()
-        # 1. 永遠先進首頁
-        driver.get("https://www.cpbl.com.tw/schedule")
+        driver.get(f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}")
         time.sleep(5)
 
-        # 2. 機器人自動點擊切換月份
-        for _ in range(10):
-            current_text = driver.find_element(By.CSS_SELECTOR, ".date_selected .date").text
-            current_m = int(current_text.split('/')[-1].strip())
-            if current_m == target_m: break
-            
-            btn_class = ".next" if current_m < target_m else ".prev"
-            driver.find_element(By.CSS_SELECTOR, f".prevNext {btn_class}").click()
-            time.sleep(3)
-
-        # 3. 確保切換到列表模式
+        # 確保切換到列表模式。若 CPBL 調整頁面結構，後續解析仍會嘗試使用目前頁面。
         try:
             driver.find_element(By.CSS_SELECTOR, "li[data-id='list']").click()
             time.sleep(3)
         except: pass
 
-        # 4. 開始解析
+        # 開始解析
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         rows = soup.select('.ScheduleTableList table tbody tr')
         
@@ -575,14 +916,16 @@ def update_specific_month():
                 exist.home_score = hscore
                 exist.game_time = gtime
                 exist.game_status = st  # 🔴 更新狀態 (包含 延賽)
-                exist.away_pitcher = aw_p
-                exist.home_pitcher = ho_p
+                if aw_p:
+                    exist.away_pitcher = aw_p
+                if ho_p:
+                    exist.home_pitcher = ho_p
             
             count += 1
             print(f"✅ {last_date}: {aw} VS {ho} ({st})")
 
         db.session.commit()
-        return jsonify({"status": "success", "month": target_m, "count": count})
+        return jsonify({"status": "success", "year": target_year, "month": target_m, "count": count})
 
     except Exception as e:
         print(traceback.format_exc())
@@ -639,8 +982,7 @@ def update_standings():
             print(f"✅ {cat_key}: {len(rows_data)} 列, headers={headers}")
             all_data[cat_key] = rows_data
 
-        with open('standings.json', 'w', encoding='utf-8') as f:
-            json.dump(all_data, f, ensure_ascii=False, indent=4)
+        write_json_file(STANDINGS_PATH, all_data)
 
         return jsonify({"status": "success", "data": all_data})
 
@@ -653,11 +995,7 @@ def update_standings():
 # 提供前端讀取戰績的 API
 @app.route('/api/get_standings')
 def get_standings_data():
-    try:
-        with open('standings.json', 'r', encoding='utf-8') as f:
-            return jsonify(json.load(f))
-    except:
-        return jsonify({})
+    return jsonify(read_json_file(STANDINGS_PATH, {}))
 
 def parse_generic_table(table_node):
     """通用工具：將 HTML 表格轉為 List[Dict]"""
@@ -693,7 +1031,7 @@ def get_game_box():
     sno = request.args.get('sno')
     if not sno: return jsonify({"error": "No SNO"}), 400
     
-    url = f"https://www.cpbl.com.tw/box/index?gameSno={sno}&year=2026&kindCode=A"
+    url = cpbl_box_url(sno)
     print(f"📊 正在解析詳細數據：{url}")
     
     driver = None
@@ -731,8 +1069,6 @@ def get_game_box():
     finally:
         if driver: driver.quit()
 
-import os
-
 @app.route('/api/init_pool')
 def init_player_pool():
     url = "https://www.cpbl.com.tw/player"
@@ -747,9 +1083,8 @@ def init_player_pool():
         print(f"--- 偵錯資訊：抓到 {len(player_links)} 個球員連結 ---")
 
         # 讀取已存的進度，避免中斷後重頭來
-        if os.path.exists('players_pool.json'):
-            with open('players_pool.json', 'r', encoding='utf-8') as f:
-                master_pool = json.load(f)
+        if PLAYERS_POOL_PATH.exists():
+            master_pool = read_json_file(PLAYERS_POOL_PATH, [])
             done_names = {p['name'] for p in master_pool}
             print(f"--- 繼續上次進度，已有 {len(master_pool)} 筆 ---")
         else:
@@ -797,8 +1132,7 @@ def init_player_pool():
                 done_names.add(name)
                 
                 # 每抓一筆就存一次，中斷也不怕
-                with open('players_pool.json', 'w', encoding='utf-8') as f:
-                    json.dump(master_pool, f, ensure_ascii=False, indent=4)
+                write_json_file(PLAYERS_POOL_PATH, master_pool)
 
             print(f"✅ {name} | {team} | {position}")
 
@@ -810,13 +1144,9 @@ def init_player_pool():
 
 @app.route('/api/get_player_pool')
 def get_player_pool():
-    try:
-        # 讀取你之前抓好的 json 檔案
-        with open('players_pool.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return jsonify(data)
-    except FileNotFoundError:
+    if not PLAYERS_POOL_PATH.exists():
         return jsonify({"error": "找不到球員池檔案，請先執行初始化"}), 404
+    return jsonify(read_json_file(PLAYERS_POOL_PATH, []))
 
 @app.route('/api/top_stats')
 def get_top_stats():
@@ -851,14 +1181,27 @@ def get_news():
         print(f"新聞抓取失敗，改用備援資料：{e}")
 
     try:
-        with open('news.json', 'r', encoding='utf-8') as f:
-            local_news = json.load(f)
+        local_news = read_json_file(DATA_DIR / 'news.json', [])
         if isinstance(local_news, list) and local_news:
             return jsonify(local_news[:limit])
     except Exception:
         pass
 
     return jsonify(NEWS_FALLBACK[:limit])
+
+@app.route('/api/health')
+def health():
+    game_count = Game.query.count()
+    return jsonify({
+        "status": "ok",
+        "season_year": SEASON_YEAR,
+        "database": str(BASE_DIR / 'instance' / 'cpbl_data.db'),
+        "data_dir": str(DATA_DIR),
+        "games": game_count,
+        "standings_ready": STANDINGS_PATH.exists(),
+        "players_ready": PLAYERS_POOL_PATH.exists(),
+    })
+
 if __name__ == '__main__':
     # debug=True 可以在你改代碼時自動重啟，非常方便
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=int(os.environ.get("CPBL_PORT", 5100)), use_reloader=False)

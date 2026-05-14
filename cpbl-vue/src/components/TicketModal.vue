@@ -154,7 +154,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { inject, ref, watch } from 'vue'
 
 const props = defineProps({
   show: {
@@ -172,6 +172,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'save', 'remove'])
+const notify = inject('notify', () => {})
 
 const note = ref('')
 const previewImage = ref('')
@@ -205,7 +206,7 @@ function handleImageUpload(event) {
 
 function save() {
   if (!previewImage.value && !note.value.trim()) {
-    alert('請至少上傳一張照片或填寫心得')
+    notify({ type: 'warning', title: '還不能新增', message: '請至少上傳一張照片或填寫心得。' })
     return
   }
 

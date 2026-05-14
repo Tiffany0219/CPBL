@@ -100,6 +100,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { cpblApi } from '../api/cpblApi'
+import { SEASON_YEAR } from '../utils'
 import StateBox from '../components/StateBox.vue'
 
 const currentMonth = new Date().getMonth() + 1
@@ -134,11 +135,19 @@ const actions = computed(() => [
   },
   {
     key: 'month',
-    title: `同步 ${targetMonth.value} 月賽程`,
+    title: `同步 ${SEASON_YEAR} 年 ${targetMonth.value} 月賽程`,
     meta: '指定月份賽程、比分、延賽狀態',
     icon: 'fa-solid fa-calendar-check',
-    run: () => cpblApi.updateMonth(targetMonth.value),
+    run: () => cpblApi.updateMonth(targetMonth.value, SEASON_YEAR),
     summarize: result => `${result?.month ?? targetMonth.value} 月完成，處理 ${result?.count ?? 0} 場`
+  },
+  {
+    key: 'gameExtras',
+    title: `補抓 ${targetMonth.value} 月投手 / MVP`,
+    meta: '只處理已完賽，寫入先發投手、勝敗投與官方 MVP',
+    icon: 'fa-solid fa-baseball-bat-ball',
+    run: () => cpblApi.updateGameExtras({ m: targetMonth.value, year: SEASON_YEAR, limit: 60 }),
+    summarize: result => `補抓完成 ${result?.updated ?? 0} 場${result?.failed?.length ? `，失敗 ${result.failed.length} 場` : ''}`
   },
   {
     key: 'standings',
@@ -222,6 +231,7 @@ async function checkHealth() {
   checking.value = true
 
   const checks = await Promise.allSettled([
+    cpblApi.getHealth(),
     cpblApi.getGames(),
     cpblApi.getStandings(),
     cpblApi.getNews({ limit: 3 }),
@@ -229,11 +239,11 @@ async function checkHealth() {
     cpblApi.getPlayerPool()
   ])
 
-  const [games, standings, news, topStats, players] = checks
+  const [api, games, standings, news, topStats, players] = checks
 
   health.value = {
     games: games.status === 'fulfilled'
-      ? { status: 'ok', value: games.value.length, message: '賽程可讀取' }
+      ? { status: api.status === 'fulfilled' ? 'ok' : 'warning', value: games.value.length, message: api.status === 'fulfilled' ? 'API 與賽程可讀取' : '賽程可讀取，健康檢查未回應' }
       : { status: 'error', value: '失敗', message: '賽程 API 異常' },
     standings: standings.status === 'fulfilled'
       ? { status: 'ok', value: standings.value?.h2h?.length || 0, message: '戰績可讀取' }

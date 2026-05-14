@@ -36,7 +36,12 @@
       <div class="gacha-stage">
         <StateBox v-if="loading" type="loading" message="正在聯繫球探中..." />
         <StateBox v-else-if="error" type="error" title="抽卡失敗" :message="error" />
-        <article v-else-if="player" class="player-card-site" :style="{ '--team-color': teamColor }">
+        <article
+          v-else-if="player"
+          :key="drawKey"
+          :class="['player-card-site', { rare: isRare }]"
+          :style="{ '--team-color': teamColor }"
+        >
           <div class="player-card-top">
             <span>{{ isRare ? 'LIMITED EDITION' : 'CPBL PLAYER CARD' }}</span>
             <strong>{{ isRare ? 'LEGEND' : 'STANDARD' }}</strong>
@@ -74,7 +79,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import {
@@ -86,11 +91,13 @@ import {
 
 defineEmits(['change-page'])
 
+const notify = inject('notify', () => {})
 const keyword = ref('')
 const player = ref(null)
 const loading = ref(false)
 const error = ref('')
 const imageMissing = ref(false)
+const drawKey = ref(0)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 
 const cleanName = computed(() => cleanPlayerName(player.value))
@@ -124,8 +131,14 @@ async function drawCard() {
     const pool = filtered.length ? filtered : players
     const luckyPlayer = pool[Math.floor(Math.random() * pool.length)]
     player.value = luckyPlayer
+    drawKey.value += 1
     imageMissing.value = false
     saveToInventory(luckyPlayer)
+    notify({
+      type: isRare.value ? 'success' : 'info',
+      title: isRare.value ? '抽到傳說球員' : '抽卡完成',
+      message: `${cleanPlayerName(luckyPlayer)} 已加入收藏冊。`
+    })
   } catch {
     error.value = '請確認 Flask 是否啟動，以及 /api/get_player_pool 是否正常回傳資料。'
   } finally {
@@ -135,7 +148,7 @@ async function drawCard() {
 
 async function searchPlayer() {
   if (!keyword.value.trim()) {
-    alert('請輸入球員姓名')
+    notify({ type: 'warning', title: '請輸入姓名', message: '輸入球員姓名後再搜尋。' })
     return
   }
   loading.value = true
@@ -150,6 +163,7 @@ async function searchPlayer() {
       return
     }
     player.value = found
+    drawKey.value += 1
     imageMissing.value = false
   } catch {
     error.value = '搜尋失敗，請確認球員 API 是否正常。'

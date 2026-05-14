@@ -256,7 +256,12 @@ function loadCollection() {
 }
 
 function loadLineup() {
-  const saved = JSON.parse(localStorage.getItem(LINEUP_KEY) || '[]')
+  let saved = []
+  try {
+    saved = JSON.parse(localStorage.getItem(LINEUP_KEY) || '[]')
+  } catch {
+    saved = []
+  }
 
   if (!Array.isArray(saved) || saved.length === 0) {
     lineup.value = createEmptyLineup()

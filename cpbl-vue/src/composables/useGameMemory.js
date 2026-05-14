@@ -2,9 +2,20 @@ import { ref } from 'vue'
 
 const FAVORITE_KEY = 'cpbl_favorite_games'
 const TICKET_KEY = 'cpbl_ticket_pocket'
+const SUPPORT_KEY = 'cpbl_game_support'
 
-const favorites = ref(JSON.parse(localStorage.getItem(FAVORITE_KEY)) || {})
-const rawTickets = JSON.parse(localStorage.getItem(TICKET_KEY)) || {}
+function readStorageObject(key) {
+  try {
+    const data = JSON.parse(localStorage.getItem(key) || '{}')
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+const favorites = ref(readStorageObject(FAVORITE_KEY))
+const rawTickets = readStorageObject(TICKET_KEY)
+const support = ref(readStorageObject(SUPPORT_KEY))
 
 // 把舊版「單筆票夾物件」自動轉成新版「陣列」
 function normalizeTickets(data) {
@@ -56,6 +67,10 @@ function saveTickets() {
   localStorage.setItem(TICKET_KEY, JSON.stringify(tickets.value))
 }
 
+function saveSupport() {
+  localStorage.setItem(SUPPORT_KEY, JSON.stringify(support.value))
+}
+
 export function useGameMemory() {
   function isFavorite(gameId) {
     return !!favorites.value[gameId]
@@ -102,6 +117,12 @@ export function useGameMemory() {
     return getTickets(gameId).length
   }
 
+  function getAllTickets() {
+    return Object.values(tickets.value)
+      .flatMap(value => Array.isArray(value) ? value : [])
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+  }
+
   function addTicket(game, payload) {
     const gameId = game.id
 
@@ -141,15 +162,53 @@ export function useGameMemory() {
     saveTickets()
   }
 
+  function getSupportStats(gameId) {
+    const current = support.value[gameId] || {}
+    return {
+      away: Number(current.away || 0),
+      home: Number(current.home || 0)
+    }
+  }
+
+  function getSupportChoice(gameId) {
+    return support.value[gameId]?.choice || ''
+  }
+
+  function supportTeam(game, side) {
+    const gameId = game.id
+    const current = support.value[gameId] || { away: 0, home: 0, choice: '' }
+    const previous = current.choice
+
+    if (previous === side) {
+      current[side] = Math.max(0, Number(current[side] || 0) - 1)
+      current.choice = ''
+    } else {
+      if (previous) current[previous] = Math.max(0, Number(current[previous] || 0) - 1)
+      current[side] = Number(current[side] || 0) + 1
+      current.choice = side
+    }
+
+    support.value = {
+      ...support.value,
+      [gameId]: current
+    }
+    saveSupport()
+  }
+
   return {
     favorites,
     tickets,
+    support,
     isFavorite,
     toggleFavorite,
     hasTicket,
     getTickets,
     getTicketCount,
+    getAllTickets,
     addTicket,
-    removeTicket
+    removeTicket,
+    getSupportStats,
+    getSupportChoice,
+    supportTeam
   }
 }

@@ -92,12 +92,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import { TEAM_COLORS } from '../composables/usePlayerCollection'
 
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
+const notify = inject('notify', () => {})
 const tabs = [
   { key: 'h2h', label: '對戰戰績' },
   { key: 'pitching', label: '團隊投球' },
@@ -193,9 +194,9 @@ async function syncStandings() {
   try {
     await cpblApi.updateStandings()
     await loadStandings()
-    alert('✅ 戰績資料更新完成')
+    notify({ type: 'success', title: '戰績已更新', message: '球隊戰績資料同步完成。' })
   } catch {
-    alert('戰績更新失敗，請確認後端是否正常。')
+    notify({ type: 'error', title: '更新失敗', message: '請確認後端是否正常。' })
   } finally {
     syncing.value = false
   }

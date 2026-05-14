@@ -1,9 +1,11 @@
+export const SEASON_YEAR = Number(import.meta.env.VITE_CPBL_SEASON_YEAR) || new Date().getFullYear()
+
 export function getTodayMMDD() {
   const now = new Date()
   return `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`
 }
 
-export function getWeekdayStr(dateStr, year = 2026) {
+export function getWeekdayStr(dateStr, year = SEASON_YEAR) {
   if (!dateStr || !dateStr.includes('/')) return ''
   const [m, d] = dateStr.split('/')
   const date = new Date(year, Number(m) - 1, Number(d))
