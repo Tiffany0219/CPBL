@@ -11,6 +11,7 @@
       <HomeView v-if="activePage === 'home'" @open-game="openGameDetail" @change-page="activePage = $event" />
       <NewsView v-else-if="activePage === 'news'" />
       <ScheduleView v-else-if="activePage === 'schedule'" @open-game="openGameDetail" />
+      <BroadcastView v-else-if="activePage === 'broadcast'" @open-game="openGameDetail" />
       <StandingsView v-else-if="activePage === 'standings'" />
       <StatsView v-else-if="activePage === 'stats'" />
       <SyncView v-else-if="activePage === 'sync'" />
@@ -51,6 +52,7 @@ import GameDetailModal from './components/GameDetailModal.vue'
 import HomeView from './views/HomeView.vue'
 import NewsView from './views/NewsView.vue'
 import ScheduleView from './views/ScheduleView.vue'
+import BroadcastView from './views/BroadcastView.vue'
 import StandingsView from './views/StandingsView.vue'
 import StatsView from './views/StatsView.vue'
 import SyncView from './views/SyncView.vue'

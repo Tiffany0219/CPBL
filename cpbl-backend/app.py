@@ -162,6 +162,7 @@ def fetch_cpbl_game_payload(game_sno, year=None, kind_code="A"):
         "game_details": parse_json_payload(payload.get("GameDetailJson"), []),
         "curt_game_detail": parse_json_payload(payload.get("CurtGameDetailJson"), {}),
         "scoreboards": parse_json_payload(payload.get("ScoreboardJson"), []),
+        "live_logs": parse_json_payload(payload.get("LiveLogJson"), []),
         "battings": parse_json_payload(payload.get("BattingJson"), []),
         "pitchings": parse_json_payload(payload.get("PitchingJson"), []),
         "raw": payload,
@@ -224,6 +225,114 @@ def players_from_battings(battings, visiting_home_type):
         "h": str(intish(b.get("HittingCnt"))),
         "rbi": str(intish(b.get("RunBattedINCnt") or b.get("RunBattedInCnt"))),
     } for b in rows if clean_player_name(b.get("HitterName"))]
+
+SIMPLE_PITCH_TEXT = {
+    "好球沒揮棒。",
+    "壞球。",
+    "揮棒落空。",
+    "擊出界外球。",
+}
+
+PLAY_BY_PLAY_KEYWORDS = [
+    "安打", "全壘打", "二壘打", "三壘打", "保送", "觸身", "三振",
+    "出局", "上壘", "得分", "打點", "跑者", "盜壘", "牽制",
+    "暴投", "捕逸", "失誤", "殘壘", "換", "犧牲", "高飛球", "滾地球",
+]
+
+def clean_live_text(value):
+    return re.sub(r'\s+', ' ', str(value or '')).strip()
+
+def inning_label(row):
+    half = "上" if str(row.get("VisitingHomeType")) == "1" else "下"
+    return f"{intish(row.get('InningSeq'))}局{half}"
+
+def build_runner_maps(live_logs):
+    maps = {"1": {}, "2": {}}
+    for row in live_logs:
+        side = str(row.get("VisitingHomeType") or "")
+        order = str(row.get("BattingOrder") or row.get("HitterLineup") or "")
+        name = clean_player_name(row.get("HitterName"))
+        if side in maps and order and name:
+            maps[side][order] = name
+    return maps
+
+def resolve_base_runner(value, side, runner_maps):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    return runner_maps.get(side, {}).get(value, value)
+
+def base_state_from_row(row, runner_maps):
+    side = str(row.get("VisitingHomeType") or "")
+    return {
+        "first": resolve_base_runner(row.get("FirstBase"), side, runner_maps),
+        "second": resolve_base_runner(row.get("SecondBase"), side, runner_maps),
+        "third": resolve_base_runner(row.get("ThirdBase"), side, runner_maps),
+    }
+
+def same_half_inning(a, b):
+    return (
+        b
+        and intish(a.get("InningSeq")) == intish(b.get("InningSeq"))
+        and str(a.get("VisitingHomeType")) == str(b.get("VisitingHomeType"))
+    )
+
+def should_keep_play_log(row):
+    content = clean_live_text(row.get("Content"))
+    if not content:
+        return False
+    if str(row.get("IsChangePlayer")) == "1":
+        return True
+    if content not in SIMPLE_PITCH_TEXT:
+        return True
+    return any(keyword in content for keyword in PLAY_BY_PLAY_KEYWORDS)
+
+def build_play_by_play(payload, game=None):
+    live_logs = payload.get("live_logs") or []
+    runner_maps = build_runner_maps(live_logs)
+    events = []
+
+    for index, row in enumerate(live_logs):
+        if not should_keep_play_log(row):
+            continue
+
+        next_row = live_logs[index + 1] if index + 1 < len(live_logs) else None
+        batting_side = str(row.get("VisitingHomeType") or "")
+        batting_team = game.away_team if batting_side == "1" and game else game.home_team if game else ""
+        if not batting_team:
+            batting_team = "客隊" if batting_side == "1" else "主隊"
+
+        bases_after = base_state_from_row(next_row, runner_maps) if same_half_inning(row, next_row) else {
+            "first": "",
+            "second": "",
+            "third": "",
+        }
+        score = {
+            "away": intish(row.get("VisitingScore")),
+            "home": intish(row.get("HomeScore")),
+        }
+
+        events.append({
+            "id": row.get("Pkno") or row.get("MainEventNo") or f"play-{index}",
+            "inning": inning_label(row),
+            "inning_seq": intish(row.get("InningSeq")),
+            "half": "top" if batting_side == "1" else "bottom",
+            "team": batting_team,
+            "hitter": clean_player_name(row.get("HitterName")),
+            "pitcher": clean_player_name(row.get("PitcherName")),
+            "result": clean_live_text(row.get("BattingActionName") or row.get("ActionName")),
+            "content": clean_live_text(row.get("Content")),
+            "count": f"{intish(row.get('BallCnt'))}-{intish(row.get('StrikeCnt'))}",
+            "outs": intish(row.get("OutCnt")),
+            "pitch_count": intish(row.get("PitchCnt")),
+            "score": score,
+            "score_text": f"{score['away']}:{score['home']}",
+            "bases_before": base_state_from_row(row, runner_maps),
+            "bases_after": bases_after,
+            "is_scoring": str(row.get("IsScoreCnt")) != "0" or "得分" in clean_live_text(row.get("Content")),
+        })
+
+    return events
 
 def extract_official_game_extras(payload, game=None):
     detail = payload.get("curt_game_detail") or {}
@@ -379,6 +488,7 @@ def get_game_detail(game_id):
         a_p = players_from_battings(payload["battings"], "1")
         h_p = players_from_battings(payload["battings"], "2")
         extras = extract_official_game_extras(payload, game)
+        play_by_play = build_play_by_play(payload, game)
 
         if any(line.values()) or extras.get("mvp") or extras.get("away_pitcher") or extras.get("home_pitcher"):
             if line["away"]:
@@ -393,6 +503,7 @@ def get_game_detail(game_id):
             db.session.commit()
 
         detail = format_game_detail(game, a_p, h_p)
+        detail["play_by_play"] = play_by_play
         detail["source"] = payload["source"]
         return jsonify(detail)
     except Exception as e:
@@ -458,6 +569,7 @@ def get_game_detail(game_id):
             "mvp": game.mvp,
             "mvp_team": game.mvp_team,
             "mvp_note": game.mvp_note,
+            "play_by_play": [],
             "source": "selenium",
         }
         return jsonify(detail)

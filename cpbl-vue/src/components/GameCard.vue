@@ -88,8 +88,8 @@
     <div class="ticket-divider"></div>
 
     <div class="ticket-footer">
-      <span>CPBL GAME TICKET</span>
-      <span>點擊查看逐局比分與打擊數據</span>
+      <span>{{ footerLabel }}</span>
+      <span>{{ footerHint }}</span>
     </div>
 
     <div v-if="showActions" class="support-panel" @click.stop>
@@ -179,6 +179,10 @@ const props = defineProps({
   showActions: {
     type: Boolean,
     default: true
+  },
+  context: {
+    type: String,
+    default: 'ticket'
   },
   supportStats: {
     type: Object,
@@ -279,4 +283,10 @@ const awaySupportPercent = computed(() => {
   return Math.round((Number(props.supportStats.away || 0) / supportTotal.value) * 100)
 })
 const homeSupportPercent = computed(() => 100 - awaySupportPercent.value)
+const footerLabel = computed(() => (props.context === 'broadcast' ? 'LIVE LOG CENTER' : 'CPBL GAME TICKET'))
+const footerHint = computed(() => (
+  props.context === 'broadcast'
+    ? '點擊查看文字轉播與壘包狀態'
+    : '點擊查看逐局比分與打擊數據'
+))
 </script>

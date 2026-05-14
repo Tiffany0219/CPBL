@@ -130,6 +130,60 @@
           </div>
         </section>
 
+        <section class="detail-section play-by-play-section">
+          <div class="detail-section-title">
+            <div>
+              <p class="eyebrow">LIVE LOG</p>
+              <h3>文字轉播</h3>
+            </div>
+            <div class="rhe-pills">
+              <span>{{ playByPlay.length }} 則事件</span>
+            </div>
+          </div>
+
+          <div v-if="playByPlay.length === 0" class="no-play-data">
+            <i class="fa-solid fa-radio"></i>
+            <strong>尚無文字轉播資料</strong>
+            <span>比賽開始後會顯示打席、跑壘與壘包狀態。</span>
+          </div>
+
+          <div v-else class="play-log-list">
+            <article
+              v-for="event in playByPlay"
+              :key="event.id"
+              :class="['play-log-item', { scoring: event.is_scoring }]"
+            >
+              <div class="play-log-time">
+                <strong>{{ event.inning }}</strong>
+                <span>{{ event.team }}</span>
+              </div>
+
+              <div class="play-log-body">
+                <div class="play-log-head">
+                  <strong>{{ event.hitter || '打者' }}</strong>
+                  <span>{{ event.result || 'PLAY' }}</span>
+                  <em>{{ event.score_text }}</em>
+                </div>
+
+                <p>{{ event.content }}</p>
+
+                <div class="play-log-meta">
+                  <span>投手 {{ event.pitcher || '-' }}</span>
+                  <span>{{ event.outs }} out</span>
+                  <span>B-S {{ event.count }}</span>
+                  <span>P {{ event.pitch_count }}</span>
+                </div>
+
+                <div class="base-state-row">
+                  <BaseDiamond label="PLAY 前" :bases="event.bases_before" />
+                  <i class="fa-solid fa-arrow-right"></i>
+                  <BaseDiamond label="PLAY 後" :bases="event.bases_after" />
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <!-- 打擊數據 -->
         <section class="batting-grid">
           <div class="batting-card">
@@ -219,6 +273,7 @@
 import { computed, watch } from 'vue'
 import { API_BASE } from '../api/cpblApi'
 import StateBox from './StateBox.vue'
+import BaseDiamond from './BaseDiamond.vue'
 
 const props = defineProps({
   show: {
@@ -264,6 +319,7 @@ const detailTitle = computed(() => {
 
 const awayPlayers = computed(() => props.detail?.away_players || [])
 const homePlayers = computed(() => props.detail?.home_players || [])
+const playByPlay = computed(() => props.detail?.play_by_play || [])
 const awayRuns = computed(() => props.detail?.away_rhe?.[0] ?? '0')
 const homeRuns = computed(() => props.detail?.home_rhe?.[0] ?? '0')
 const winnerSide = computed(() => {
