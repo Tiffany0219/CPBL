@@ -30,6 +30,15 @@
       </div>
     </section>
 
+    <section v-if="liveGames.length" class="live-ribbon">
+      <i class="fa-solid fa-circle-play"></i>
+      <div>
+        <strong>現在進行中</strong>
+        <span>{{ liveGames[0].away }} {{ liveGames[0].away_score }} : {{ liveGames[0].home_score }} {{ liveGames[0].home }} · {{ liveGames[0].game_time || 'LIVE' }}</span>
+      </div>
+      <button type="button" @click="$emit('open-game', liveGames[0].id)">查看戰況</button>
+    </section>
+
     <section class="home-extras-grid">
       <article class="focus-player-card">
         <div>
@@ -182,7 +191,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import { SEASON_YEAR, getTodayMMDD, getWeekdayStr } from '../utils'
 
@@ -195,6 +204,7 @@ import { useGameMemory } from '../composables/useGameMemory'
 defineEmits(['open-game', 'change-page'])
 
 const notify = inject('notify', () => {})
+const auth = inject('auth', null)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const homeDate = ref(getTodayMMDD())
 const games = ref([])
@@ -206,13 +216,14 @@ const error = ref('')
 
 const showTicketModal = ref(false)
 const selectedTicketGame = ref(null)
+const remoteTickets = ref({})
 
 const {
   isFavorite,
   toggleFavorite,
-  hasTicket,
-  getTickets,
-  getTicketCount,
+  hasTicket: hasLocalTicket,
+  getTickets: getLocalTickets,
+  getTicketCount: getLocalTicketCount,
   getSupportStats,
   getSupportChoice,
   addTicket,
@@ -238,7 +249,8 @@ const baseballTips = [
 ]
 
 const weekday = computed(() => getWeekdayStr(homeDate.value))
-const liveCount = computed(() => games.value.filter(game => game.status === 'LIVE').length)
+const liveGames = computed(() => games.value.filter(game => game.status === 'LIVE'))
+const liveCount = computed(() => liveGames.value.length)
 const finishedCount = computed(() => games.value.filter(game => game.status === 'FINISH').length)
 const postponedCount = computed(() => games.value.filter(game => game.status === '延賽' || game.status === 'POSTPONED').length)
 const upcomingCount = computed(() => games.value.filter(game => !['LIVE', 'FINISH', '延賽', 'POSTPONED'].includes(game.status)).length)
@@ -431,6 +443,35 @@ function selectTeam(team) {
   loadGames()
 }
 
+function hasTicket(gameId) {
+  if (auth?.token?.value) return Array.isArray(remoteTickets.value[gameId]) && remoteTickets.value[gameId].length > 0
+  return hasLocalTicket(gameId)
+}
+
+function getTickets(gameId) {
+  if (auth?.token?.value) return remoteTickets.value[gameId] || []
+  return getLocalTickets(gameId)
+}
+
+function getTicketCount(gameId) {
+  if (auth?.token?.value) return getTickets(gameId).length
+  return getLocalTicketCount(gameId)
+}
+
+async function loadRemoteTickets() {
+  if (!auth?.token?.value) {
+    remoteTickets.value = {}
+    return
+  }
+
+  const tickets = await cpblApi.getUserTickets(auth.token.value)
+  remoteTickets.value = tickets.reduce((map, ticket) => {
+    if (!map[ticket.gameId]) map[ticket.gameId] = []
+    map[ticket.gameId].push(ticket)
+    return map
+  }, {})
+}
+
 async function loadGames() {
   loading.value = true
   error.value = ''
@@ -446,6 +487,7 @@ async function loadGames() {
     if (statsResult.status === 'fulfilled') {
       topStats.value = Array.isArray(statsResult.value?.data) ? statsResult.value.data : []
     }
+    await loadRemoteTickets()
   } catch (err) {
     console.error(err)
     error.value = '資料載入失敗，請確認 Flask 後端是否啟動。'
@@ -490,21 +532,39 @@ function closeTicketModal() {
   selectedTicketGame.value = null
 }
 
-function handleSaveTicket(payload) {
+async function handleSaveTicket(payload) {
   if (!selectedTicketGame.value) return
 
-  addTicket(selectedTicketGame.value, payload)
-  notify({ type: 'success', title: '已加入票夾', message: '觀賽紀錄已儲存。' })
+  try {
+    if (auth?.token?.value) {
+      await cpblApi.saveUserTicket(selectedTicketGame.value, payload, auth.token.value)
+      await loadRemoteTickets()
+    } else {
+      addTicket(selectedTicketGame.value, payload)
+    }
+    notify({ type: 'success', title: '已加入票夾', message: auth?.token?.value ? '觀賽紀錄已同步到帳號。' : '觀賽紀錄已儲存。' })
+  } catch {
+    notify({ type: 'error', title: '儲存失敗', message: '票夾暫時沒有同步成功。' })
+  }
 }
 
-function handleRemoveTicket(ticketId) {
+async function handleRemoveTicket(ticketId) {
   if (!selectedTicketGame.value) return
 
   const confirmed = confirm('確定要刪除這筆觀賽紀錄嗎？')
   if (!confirmed) return
 
-  removeTicket(selectedTicketGame.value.id, ticketId)
-  notify({ type: 'info', title: '已刪除', message: '這筆觀賽紀錄已移除。' })
+  try {
+    if (auth?.token?.value) {
+      await cpblApi.removeUserTicket(ticketId, auth.token.value)
+      await loadRemoteTickets()
+    } else {
+      removeTicket(selectedTicketGame.value.id, ticketId)
+    }
+    notify({ type: 'info', title: '已刪除', message: '這筆觀賽紀錄已移除。' })
+  } catch {
+    notify({ type: 'error', title: '刪除失敗', message: '票夾暫時沒有同步成功。' })
+  }
 }
 
 function openHighlight(game) {
@@ -513,5 +573,12 @@ function openHighlight(game) {
   window.open(url, '_blank')
 }
 
-onMounted(loadGames)
+watch(() => auth?.token?.value, () => {
+  loadRemoteTickets()
+})
+
+onMounted(() => {
+  if (auth?.user?.value?.favorite_team) selectedTeam.value = auth.user.value.favorite_team
+  loadGames()
+})
 </script>

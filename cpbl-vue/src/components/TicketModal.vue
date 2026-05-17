@@ -11,6 +11,7 @@
         <p v-if="game">
           {{ game.date }} · {{ game.location || '未知球場' }} ·
           {{ game.away }} vs {{ game.home }}
+          <span v-if="inningLabel" class="ticket-modal-inning">{{ inningLabel }}</span>
         </p>
       </div>
 
@@ -19,6 +20,10 @@
           <strong>{{ game.away }}</strong>
           <span>{{ game.away_score ?? '-' }} : {{ game.home_score ?? '-' }}</span>
           <strong>{{ game.home }}</strong>
+        </div>
+        <div v-if="inningLabel" class="ticket-preview-inning">
+          <i class="fa-solid fa-baseball"></i>
+          {{ inningLabel }}
         </div>
       </div>
 
@@ -154,7 +159,7 @@
 </template>
 
 <script setup>
-import { inject, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 
 const props = defineProps({
   show: {
@@ -177,6 +182,13 @@ const notify = inject('notify', () => {})
 const note = ref('')
 const previewImage = ref('')
 const previewTicket = ref(null)
+
+const inningLabel = computed(() => {
+  if (props.game?.status !== 'LIVE') return ''
+  const value = cleanValue(props.game.game_time)
+  if (!value || value === 'LIVE') return ''
+  return value.includes('局') ? `目前 ${value}` : value
+})
 
 watch(
   () => props.show,
@@ -242,5 +254,9 @@ function formatDate(value) {
     hour: '2-digit',
     minute: '2-digit'
   })
+}
+
+function cleanValue(value) {
+  return value && value !== '-' && value !== '--' ? String(value).trim() : ''
 }
 </script>

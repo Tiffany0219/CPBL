@@ -1,10 +1,12 @@
 import os
 import re, time, json, traceback
+import secrets
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
+from werkzeug.security import check_password_hash, generate_password_hash
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
@@ -13,7 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sqlalchemy import or_, text
 from extensions import db
-from models import Game
+from models import Game, User, UserCard, UserTicket
 from services.cpbl_official import (
     NEWS_FALLBACK,
     TOP_STATS_SOURCE_URL,
@@ -43,6 +45,18 @@ GAME_EXTRA_COLUMNS = {
     "mvp_note": "VARCHAR(120) DEFAULT ''",
 }
 
+USER_EXTRA_COLUMNS = {
+    "favorite_team": "VARCHAR(100) DEFAULT ''",
+    "last_daily_reward_date": "VARCHAR(10) DEFAULT ''",
+}
+
+USER_CARD_EXTRA_COLUMNS = {
+    "rarity": "VARCHAR(20) DEFAULT 'common'",
+}
+
+TEAMS = ['中信兄弟', '味全龍', '樂天桃猿', '統一7-ELEVEn獅', '富邦悍將', '台鋼雄鷹']
+RARITIES = {"common", "rare", "legend"}
+
 def ensure_game_schema():
     existing = {
         row[1]
@@ -53,9 +67,21 @@ def ensure_game_schema():
             db.session.execute(text(f"ALTER TABLE game ADD COLUMN {column} {column_type}"))
     db.session.commit()
 
+def ensure_columns(table, columns):
+    existing = {
+        row[1]
+        for row in db.session.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    }
+    for column, column_type in columns.items():
+        if column not in existing:
+            db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
+    db.session.commit()
+
 with app.app_context():
     db.create_all()
     ensure_game_schema()
+    ensure_columns("user", USER_EXTRA_COLUMNS)
+    ensure_columns("user_card", USER_CARD_EXTRA_COLUMNS)
 
 def make_driver():
     opts = Options()
@@ -377,6 +403,119 @@ def apply_game_extras(game, extras):
     if extras.get("status"):
         game.game_status = extras["status"]
         game.game_time = "Final"
+
+def user_to_dict(user):
+    return {
+        "id": user.id,
+        "username": user.username,
+        "favorite_team": user.favorite_team or "",
+        "last_daily_reward_date": user.last_daily_reward_date or "",
+    }
+
+def card_to_dict(card):
+    return {
+        "name": card.name,
+        "team": card.team,
+        "position": card.position,
+        "description": card.description,
+        "rarity": card.rarity or "common",
+        "count": card.count,
+    }
+
+def ticket_to_dict(ticket):
+    return {
+        "id": ticket.id,
+        "gameId": ticket.game_id,
+        "date": ticket.game_date,
+        "location": ticket.location,
+        "away": ticket.away_team,
+        "home": ticket.home_team,
+        "away_score": ticket.away_score,
+        "home_score": ticket.home_score,
+        "status": ticket.game_status,
+        "note": ticket.note,
+        "image": ticket.image,
+        "createdAt": ticket.created_at.isoformat() if ticket.created_at else "",
+    }
+
+def get_auth_user():
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "", 1).strip() if auth.startswith("Bearer ") else ""
+    if not token:
+        return None
+    return User.query.filter_by(api_token=token).first()
+
+def require_auth_user():
+    user = get_auth_user()
+    if not user:
+        return None, (jsonify({"error": "請先登入"}), 401)
+    return user, None
+
+def clean_username(value):
+    value = re.sub(r'\s+', '', str(value or '')).strip()
+    return value[:40]
+
+def normalize_card_payload(payload):
+    name = clean_player_name(payload.get("name"))
+    if not name:
+        raise ValueError("缺少球員姓名")
+    rarity = str(payload.get("rarity") or "").lower()
+    if rarity not in RARITIES:
+        rarity = "legend" if name == "頌恩" else "common"
+    return {
+        "name": name,
+        "team": str(payload.get("team") or "")[:100],
+        "position": str(payload.get("position") or "")[:50],
+        "description": str(payload.get("description") or "")[:300],
+        "rarity": rarity,
+        "count": max(1, intish(payload.get("count"), 1)),
+    }
+
+def normalize_ticket_payload(payload):
+    game = payload.get("game") or {}
+    game_id = intish(game.get("id") or payload.get("gameId"))
+    if not game_id:
+        raise ValueError("缺少比賽 ID")
+    return {
+        "game_id": game_id,
+        "game_date": str(game.get("date") or payload.get("date") or "")[:10],
+        "location": str(game.get("location") or payload.get("location") or "")[:100],
+        "away_team": str(game.get("away") or payload.get("away") or "")[:100],
+        "home_team": str(game.get("home") or payload.get("home") or "")[:100],
+        "away_score": str(game.get("away_score") if game.get("away_score") is not None else payload.get("away_score") or "")[:10],
+        "home_score": str(game.get("home_score") if game.get("home_score") is not None else payload.get("home_score") or "")[:10],
+        "game_status": str(game.get("status") or payload.get("status") or "")[:20],
+        "note": str(payload.get("note") or "")[:1000],
+        "image": str(payload.get("image") or ""),
+    }
+
+def today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+def rarity_from_player(player):
+    name = clean_player_name(player.get("name"))
+    if name == "頌恩":
+        return "legend"
+    token = sum(ord(ch) for ch in name)
+    if token % 19 == 0:
+        return "legend"
+    if token % 5 == 0:
+        return "rare"
+    return "common"
+
+def choose_reward_player():
+    players = read_json_file(PLAYERS_POOL_PATH, [])
+    if not isinstance(players, list) or not players:
+        return None
+    usable = [
+        player for player in players
+        if isinstance(player, dict) and clean_player_name(player.get("name")) and "二軍" not in str(player.get("team") or "")
+    ]
+    pool = usable or players
+    index = int(datetime.now().strftime("%j")) % len(pool)
+    player = dict(pool[index])
+    player["rarity"] = rarity_from_player(player)
+    return player
 
 # --- 格式化輔助函數：確保數據轉成陣列 ---
 # --- 格式化輔助函數：增加球員參數 ---
@@ -812,6 +951,208 @@ def update_today():
         return jsonify({"status": "success", "count": count})
     finally:
         if driver: driver.quit()
+
+@app.route('/api/auth/register', methods=['POST'])
+def register_user():
+    data = request.get_json(silent=True) or {}
+    username = clean_username(data.get("username"))
+    password = str(data.get("password") or "")
+    favorite_team = str(data.get("favorite_team") or "")
+
+    if len(username) < 3:
+        return jsonify({"error": "帳號至少需要 3 個字"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "密碼至少需要 4 個字"}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({"error": "這個帳號已經存在"}), 409
+
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        api_token=secrets.token_urlsafe(32),
+        favorite_team=favorite_team if favorite_team in TEAMS else "",
+    )
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"status": "success", "user": user_to_dict(user), "token": user.api_token})
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_user():
+    data = request.get_json(silent=True) or {}
+    username = clean_username(data.get("username"))
+    password = str(data.get("password") or "")
+    user = User.query.filter_by(username=username).first()
+
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({"error": "帳號或密碼錯誤"}), 401
+
+    return jsonify({"status": "success", "user": user_to_dict(user), "token": user.api_token})
+
+@app.route('/api/auth/me')
+def auth_me():
+    user, error = require_auth_user()
+    if error:
+        return error
+    return jsonify({"status": "success", "user": user_to_dict(user)})
+
+@app.route('/api/auth/me', methods=['PATCH'])
+def update_auth_me():
+    user, error = require_auth_user()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    favorite_team = str(data.get("favorite_team") or "")
+    user.favorite_team = favorite_team if favorite_team in TEAMS else ""
+    db.session.commit()
+    return jsonify({"status": "success", "user": user_to_dict(user)})
+
+@app.route('/api/profile')
+def get_profile():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    cards = UserCard.query.filter_by(user_id=user.id).order_by(UserCard.count.desc(), UserCard.name.asc()).all()
+    tickets = UserTicket.query.filter_by(user_id=user.id).order_by(UserTicket.created_at.desc()).limit(6).all()
+    total_cards = sum(intish(card.count, 1) for card in cards)
+    rarity_counts = {"common": 0, "rare": 0, "legend": 0}
+    team_counts = {}
+    for card in cards:
+        rarity_counts[card.rarity or "common"] = rarity_counts.get(card.rarity or "common", 0) + intish(card.count, 1)
+        if card.team:
+            team_counts[card.team] = team_counts.get(card.team, 0) + intish(card.count, 1)
+
+    leaderboard = sorted([card_to_dict(card) for card in cards], key=lambda item: (-intish(item.get("count"), 1), item.get("name", "")))[:5]
+    top_team = sorted(team_counts.items(), key=lambda item: item[1], reverse=True)[0][0] if team_counts else ""
+
+    return jsonify({
+        "user": user_to_dict(user),
+        "summary": {
+            "unique_cards": len(cards),
+            "total_cards": total_cards,
+            "ticket_count": UserTicket.query.filter_by(user_id=user.id).count(),
+            "top_team": top_team,
+            "rarities": rarity_counts,
+            "daily_claimed": user.last_daily_reward_date == today_key(),
+        },
+        "recent_cards": [card_to_dict(card) for card in cards[:6]],
+        "leaderboard": leaderboard,
+        "recent_tickets": [ticket_to_dict(ticket) for ticket in tickets],
+    })
+
+def upsert_user_card(user, payload):
+    card = UserCard.query.filter_by(user_id=user.id, name=payload["name"]).first()
+    if card:
+        card.count = intish(card.count, 1) + payload["count"]
+        card.team = payload["team"] or card.team
+        card.position = payload["position"] or card.position
+        card.description = payload["description"] or card.description
+        if payload.get("rarity") in RARITIES:
+            card.rarity = payload["rarity"]
+    else:
+        card = UserCard(user_id=user.id, **payload)
+        db.session.add(card)
+    return card
+
+@app.route('/api/rewards/daily', methods=['POST'])
+def claim_daily_reward():
+    user, error = require_auth_user()
+    if error:
+        return error
+    if user.last_daily_reward_date == today_key():
+        return jsonify({"error": "今天已經領過每日獎勵"}), 409
+
+    player = choose_reward_player()
+    if not player:
+        return jsonify({"error": "球員池沒有資料，請先同步球員資料"}), 400
+
+    payload = normalize_card_payload({ **player, "count": 1 })
+    card = upsert_user_card(user, payload)
+    user.last_daily_reward_date = today_key()
+    db.session.commit()
+    return jsonify({"status": "success", "card": card_to_dict(card), "user": user_to_dict(user)})
+
+@app.route('/api/cards', methods=['GET'])
+def get_user_cards():
+    user, error = require_auth_user()
+    if error:
+        return error
+    cards = UserCard.query.filter_by(user_id=user.id).order_by(UserCard.name.asc()).all()
+    return jsonify([card_to_dict(card) for card in cards])
+
+@app.route('/api/cards', methods=['POST'])
+def save_user_card():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    try:
+        payload = normalize_card_payload(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    card = upsert_user_card(user, payload)
+
+    db.session.commit()
+    return jsonify({"status": "success", "card": card_to_dict(card)})
+
+@app.route('/api/cards/<path:player_name>', methods=['DELETE'])
+def delete_user_card(player_name):
+    user, error = require_auth_user()
+    if error:
+        return error
+    card = UserCard.query.filter_by(user_id=user.id, name=clean_player_name(player_name)).first()
+    if card:
+        db.session.delete(card)
+        db.session.commit()
+    return jsonify({"status": "success"})
+
+@app.route('/api/cards', methods=['DELETE'])
+def clear_user_cards():
+    user, error = require_auth_user()
+    if error:
+        return error
+    UserCard.query.filter_by(user_id=user.id).delete()
+    db.session.commit()
+    return jsonify({"status": "success"})
+
+@app.route('/api/tickets')
+def get_user_tickets():
+    user, error = require_auth_user()
+    if error:
+        return error
+    game_id = request.args.get('game_id', type=int)
+    q = UserTicket.query.filter_by(user_id=user.id)
+    if game_id:
+        q = q.filter_by(game_id=game_id)
+    tickets = q.order_by(UserTicket.created_at.desc()).all()
+    return jsonify([ticket_to_dict(ticket) for ticket in tickets])
+
+@app.route('/api/tickets', methods=['POST'])
+def save_user_ticket():
+    user, error = require_auth_user()
+    if error:
+        return error
+    try:
+        payload = normalize_ticket_payload(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    ticket = UserTicket(user_id=user.id, **payload)
+    db.session.add(ticket)
+    db.session.commit()
+    return jsonify({"status": "success", "ticket": ticket_to_dict(ticket)})
+
+@app.route('/api/tickets/<int:ticket_id>', methods=['DELETE'])
+def delete_user_ticket(ticket_id):
+    user, error = require_auth_user()
+    if error:
+        return error
+    ticket = UserTicket.query.filter_by(user_id=user.id, id=ticket_id).first()
+    if ticket:
+        db.session.delete(ticket)
+        db.session.commit()
+    return jsonify({"status": "success"})
 
 @app.route('/api/update/game_extras')
 def update_game_extras():

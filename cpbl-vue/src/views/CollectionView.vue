@@ -4,7 +4,7 @@
       <div>
         <p class="eyebrow">MY COLLECTION</p>
         <h2>球員收藏冊</h2>
-        <p>整理抽卡獲得的球員，依球隊、姓名與位置快速查看收藏狀態。</p>
+        <p>整理抽卡獲得的球員，登入後會同步保存到你的卡牌帳號。</p>
       </div>
 
       <div class="lineup-header-actions">
@@ -79,12 +79,13 @@
         <article
           v-for="player in filteredCollection"
           :key="cleanName(player)"
-          class="collection-card-large"
+          :class="['collection-card-large', player.rarity || 'common']"
           :style="{ '--team-color': teamColor(player.team) }"
+          @click="selectedPlayer = player"
         >
           <div class="collection-card-top">
             <span>{{ player.team || '未知球隊' }}</span>
-            <strong>x{{ player.count || 1 }}</strong>
+            <strong>{{ rarityLabel(player.rarity) }} x{{ player.count || 1 }}</strong>
           </div>
 
           <div class="collection-card-avatar">
@@ -103,12 +104,12 @@
           </div>
 
           <div class="collection-card-actions">
-            <button type="button" @click="copyPlayerName(player)">
+            <button type="button" @click.stop="copyPlayerName(player)">
               <i class="fa-solid fa-copy"></i>
               複製姓名
             </button>
 
-            <button class="danger" type="button" @click="removePlayer(player)">
+            <button class="danger" type="button" @click.stop="removePlayer(player)">
               <i class="fa-solid fa-trash"></i>
               移除
             </button>
@@ -116,12 +117,40 @@
         </article>
       </div>
     </section>
+
+    <div v-if="selectedPlayer" class="modal" style="display:block;">
+      <div class="modal-content card-detail-modal">
+        <button class="modal-close" type="button" @click="selectedPlayer = null">&times;</button>
+        <p class="eyebrow">PLAYER CARD</p>
+        <div class="card-detail-head">
+          <div class="collection-card-avatar">
+            <img
+              v-if="!failedImages[cleanName(selectedPlayer)]"
+              :src="playerImage(selectedPlayer)"
+              :alt="cleanName(selectedPlayer)"
+              @error="markImageFailed(selectedPlayer)"
+            />
+            <span v-else>{{ initials(selectedPlayer) }}</span>
+          </div>
+          <div>
+            <span :class="['rarity-pill', selectedPlayer.rarity || 'common']">{{ rarityLabel(selectedPlayer.rarity) }}</span>
+            <h2>{{ cleanName(selectedPlayer) }}</h2>
+            <p>{{ selectedPlayer.team || '未知球隊' }} · {{ selectedPlayer.position || '未知位置' }}</p>
+          </div>
+        </div>
+        <p class="card-detail-desc">{{ selectedPlayer.description || '這位球員已加入你的收藏冊，之後可以排進我的打線。' }}</p>
+        <div class="profile-list-row">
+          <span>持有張數</span>
+          <strong>x{{ selectedPlayer.count || 1 }}</strong>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
-import { API_BASE } from '../api/cpblApi'
+import { computed, inject, onMounted, ref, watch } from 'vue'
+import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import {
   TEAMS,
@@ -129,16 +158,20 @@ import {
   clearPlayerCollection,
   getCollectionList,
   playerInitials,
+  rarityLabel,
   removePlayerFromCollection,
+  saveCollectionMap,
   teamColor
 } from '../composables/usePlayerCollection'
 
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const notify = inject('notify', () => {})
+const auth = inject('auth', null)
 const collection = ref([])
 const keyword = ref('')
 const teamFilter = ref('')
 const failedImages = ref({})
+const selectedPlayer = ref(null)
 const teams = TEAMS
 
 const filteredCollection = computed(() => {
@@ -185,24 +218,60 @@ function markImageFailed(player) {
   }
 }
 
-function loadCollection() {
+function collectionListToMap(cards = []) {
+  return cards.reduce((map, card) => {
+    map[cleanPlayerName(card)] = card
+    return map
+  }, {})
+}
+
+async function loadCollection() {
+  if (auth?.token?.value) {
+    try {
+      const cards = await cpblApi.getUserCards(auth.token.value)
+      saveCollectionMap(collectionListToMap(cards || []))
+      collection.value = getCollectionList()
+      return
+    } catch {
+      notify({ type: 'warning', title: '同步失敗', message: '暫時改用本機收藏資料。' })
+    }
+  }
+
   collection.value = getCollectionList()
 }
 
-function removePlayer(player) {
+async function removePlayer(player) {
   const confirmed = confirm(`確定要移除 ${cleanName(player)} 嗎？`)
   if (!confirmed) return
 
+  if (auth?.token?.value) {
+    try {
+      await cpblApi.removeUserCard(cleanName(player), auth.token.value)
+    } catch {
+      notify({ type: 'warning', title: '移除失敗', message: '伺服器暫時沒有同步成功。' })
+      return
+    }
+  }
+
   removePlayerFromCollection(cleanName(player))
-  loadCollection()
+  await loadCollection()
 }
 
-function clearCollection() {
+async function clearCollection() {
   const confirmed = confirm('確定要清空整本球員收藏冊嗎？')
   if (!confirmed) return
 
+  if (auth?.token?.value) {
+    try {
+      await cpblApi.clearUserCards(auth.token.value)
+    } catch {
+      notify({ type: 'warning', title: '清空失敗', message: '伺服器暫時沒有同步成功。' })
+      return
+    }
+  }
+
   clearPlayerCollection()
-  loadCollection()
+  await loadCollection()
 }
 
 async function copyPlayerName(player) {
@@ -214,6 +283,12 @@ async function copyPlayerName(player) {
   } catch {
     notify({ type: 'info', title: '球員姓名', message: name })
   }
+}
+
+if (auth?.token) {
+  watch(auth.token, () => {
+    loadCollection()
+  })
 }
 
 onMounted(loadCollection)

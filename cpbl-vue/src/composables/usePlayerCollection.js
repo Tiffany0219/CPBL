@@ -24,12 +24,32 @@ export function teamColor(team = '') {
   return TEAM_COLORS[team] || '#334155'
 }
 
+export function playerRarity(player = {}) {
+  const explicit = String(player.rarity || '').toLowerCase()
+  if (['common', 'rare', 'legend'].includes(explicit)) return explicit
+  const name = cleanPlayerName(player)
+  if (name === '頌恩') return 'legend'
+  const score = Array.from(name).reduce((sum, char) => sum + char.charCodeAt(0), 0)
+  if (score % 19 === 0) return 'legend'
+  if (score % 5 === 0) return 'rare'
+  return 'common'
+}
+
+export function rarityLabel(rarity = 'common') {
+  return {
+    common: '一般',
+    rare: '稀有',
+    legend: '傳說'
+  }[rarity] || '一般'
+}
+
 export function normalizePlayer(player = {}, fallbackName = '') {
   return {
     name: cleanPlayerName(player.name || fallbackName),
     team: player.team || '',
     position: player.position || '',
     description: player.description || '',
+    rarity: playerRarity(player),
     count: Number(player.count || 1)
   }
 }

@@ -150,7 +150,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, inject, onMounted, ref } from 'vue'
 import { API_BASE } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import {
@@ -164,6 +164,7 @@ import {
 
 const LINEUP_KEY = 'my_cpbl_lineup'
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
+const auth = inject('auth', null)
 
 const positions = ['投手', '捕手', '一壘', '二壘', '三壘', '游擊', '左外野', '中外野', '右外野', '指定打擊']
 const defaultPositions = ['中外野', '二壘', '游擊', '一壘', '三壘', '左外野', '右外野', '捕手', '指定打擊']
@@ -178,6 +179,10 @@ const failedImages = ref({})
 
 const activeSlot = computed(() => lineup.value[activeSlotIndex.value] || lineup.value[0])
 const filledCount = computed(() => lineup.value.filter(slot => slot.player).length)
+const lineupStorageKey = computed(() => {
+  const userId = auth?.user?.value?.id
+  return userId ? `${LINEUP_KEY}_${userId}` : LINEUP_KEY
+})
 const filteredCollection = computed(() => {
   const searchText = keyword.value.trim().toLowerCase()
 
@@ -258,7 +263,7 @@ function loadCollection() {
 function loadLineup() {
   let saved = []
   try {
-    saved = JSON.parse(localStorage.getItem(LINEUP_KEY) || '[]')
+    saved = JSON.parse(localStorage.getItem(lineupStorageKey.value) || '[]')
   } catch {
     saved = []
   }
@@ -281,7 +286,7 @@ function loadLineup() {
 }
 
 function saveLineup() {
-  localStorage.setItem(LINEUP_KEY, JSON.stringify(lineup.value))
+  localStorage.setItem(lineupStorageKey.value, JSON.stringify(lineup.value))
 }
 
 function reloadCollection() {

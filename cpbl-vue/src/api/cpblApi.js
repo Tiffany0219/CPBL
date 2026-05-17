@@ -10,7 +10,12 @@ function buildQuery(params = {}) {
 }
 
 async function request(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, options)
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+    ...(options.headers || {})
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(text || `API Error ${res.status}`)
@@ -18,9 +23,73 @@ async function request(path, options = {}) {
   return res.json()
 }
 
+function postJson(path, data, token) {
+  return request(path, {
+    method: 'POST',
+    body: JSON.stringify(data || {}),
+    token
+  })
+}
+
 export const cpblApi = {
   getHealth() {
     return request('/health')
+  },
+
+  register(username, password) {
+    return postJson('/auth/register', { username, password })
+  },
+
+  login(username, password) {
+    return postJson('/auth/login', { username, password })
+  },
+
+  getMe(token) {
+    return request('/auth/me', { token })
+  },
+
+  updateMe(data, token) {
+    return request('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data || {}),
+      token
+    })
+  },
+
+  getProfile(token) {
+    return request('/profile', { token })
+  },
+
+  claimDailyReward(token) {
+    return postJson('/rewards/daily', {}, token)
+  },
+
+  getUserCards(token) {
+    return request('/cards', { token })
+  },
+
+  saveUserCard(card, token) {
+    return postJson('/cards', card, token)
+  },
+
+  removeUserCard(name, token) {
+    return request(`/cards/${encodeURIComponent(name)}`, { method: 'DELETE', token })
+  },
+
+  clearUserCards(token) {
+    return request('/cards', { method: 'DELETE', token })
+  },
+
+  getUserTickets(token, gameId) {
+    return request(`/tickets${buildQuery({ game_id: gameId })}`, { token })
+  },
+
+  saveUserTicket(game, ticket, token) {
+    return postJson('/tickets', { game, ...ticket }, token)
+  },
+
+  removeUserTicket(ticketId, token) {
+    return request(`/tickets/${ticketId}`, { method: 'DELETE', token })
   },
 
   getGames(params = {}) {

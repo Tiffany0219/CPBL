@@ -15,6 +15,7 @@
 
       <div class="ticket-meta">
         <span class="ticket-date">{{ game.date }}</span>
+        <span v-if="inningText" class="ticket-inning">{{ inningText }}</span>
         <span class="ticket-status" :class="statusClass">{{ statusText }}</span>
       </div>
     </div>
@@ -234,6 +235,13 @@ const statusClass = computed(() => {
   if (props.game.status === 'LIVE') return 'live'
   if (props.game.status === 'POSTPONED' || props.game.status === '延賽') return 'postponed'
   return 'upcoming'
+})
+
+const inningText = computed(() => {
+  if (props.game.status !== 'LIVE') return ''
+  const value = cleanName(props.game.game_time)
+  if (!value || value === 'LIVE') return ''
+  return value.includes('局') ? `目前 ${value}` : value
 })
 
 function cleanName(value) {

@@ -29,7 +29,7 @@
         <div class="gacha-note">
           <h3>抽卡說明</h3>
           <p>系統會從球員池中隨機抽取一位球員，並依球隊產生對應卡牌樣式。</p>
-          <p>抽到的球員會自動存入瀏覽器 localStorage，可作為簡易集卡冊基礎。</p>
+          <p>抽卡需要登入，抽到的球員會自動同步保存到你的卡牌帳號。</p>
         </div>
       </div>
 
@@ -39,12 +39,12 @@
         <article
           v-else-if="player"
           :key="drawKey"
-          :class="['player-card-site', { rare: isRare }]"
+          :class="['player-card-site', rarityClass]"
           :style="{ '--team-color': teamColor }"
         >
           <div class="player-card-top">
-            <span>{{ isRare ? 'LIMITED EDITION' : 'CPBL PLAYER CARD' }}</span>
-            <strong>{{ isRare ? 'LEGEND' : 'STANDARD' }}</strong>
+            <span>{{ rarityHeadline }}</span>
+            <strong>{{ rarityText }}</strong>
           </div>
           <div class="player-photo-wrap">
             <img
@@ -65,7 +65,7 @@
             {{ player.description || '這位球員在場上展現穩定表現，是球隊不可或缺的戰力。' }}
           </div>
           <div class="player-card-footer">
-            <span>{{ isRare ? '★★★ 傳說球員' : '★ 一般球員' }}</span>
+            <span>{{ rarityStars }} {{ rarityText }}球員</span>
           </div>
         </article>
         <div v-else class="card-display-empty">
@@ -85,13 +85,16 @@ import StateBox from '../components/StateBox.vue'
 import {
   addPlayerToCollection,
   cleanPlayerName,
+  playerRarity,
   playerInitials as getPlayerInitials,
+  rarityLabel,
   teamColor as getTeamColor
 } from '../composables/usePlayerCollection'
 
 defineEmits(['change-page'])
 
 const notify = inject('notify', () => {})
+const auth = inject('auth', null)
 const keyword = ref('')
 const player = ref(null)
 const loading = ref(false)
@@ -101,13 +104,36 @@ const drawKey = ref(0)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 
 const cleanName = computed(() => cleanPlayerName(player.value))
-const isRare = computed(() => cleanName.value.includes('頌恩'))
+const rarity = computed(() => playerRarity(player.value || {}))
+const rarityText = computed(() => rarityLabel(rarity.value))
+const rarityClass = computed(() => ({ rare: rarity.value === 'rare', legend: rarity.value === 'legend' }))
+const rarityHeadline = computed(() => {
+  if (rarity.value === 'legend') return 'LIMITED EDITION'
+  if (rarity.value === 'rare') return 'RARE CARD'
+  return 'CPBL PLAYER CARD'
+})
+const rarityStars = computed(() => ({ common: '★', rare: '★★', legend: '★★★' }[rarity.value] || '★'))
 const teamColor = computed(() => getTeamColor(player.value?.team))
 const playerInitials = computed(() => getPlayerInitials(player.value))
 const playerImage = computed(() => `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`)
 
-function saveToInventory(p) {
-  addPlayerToCollection(p)
+async function saveToInventory(p) {
+  if (!auth?.token?.value) {
+    throw new Error('AUTH_REQUIRED')
+  }
+
+  try {
+      const card = { ...p, rarity: playerRarity(p) }
+      await cpblApi.saveUserCard(card, auth.token.value)
+      addPlayerToCollection(card)
+    try {
+      await auth.refreshCards?.()
+    } catch {
+      notify({ type: 'warning', title: '同步提醒', message: '卡牌已儲存，收藏冊稍後重新整理即可更新。' })
+    }
+  } catch {
+    throw new Error('SAVE_FAILED')
+  }
 }
 
 async function getPool() {
@@ -130,20 +156,35 @@ async function drawCard() {
     })
     const pool = filtered.length ? filtered : players
     const luckyPlayer = pool[Math.floor(Math.random() * pool.length)]
-    player.value = luckyPlayer
+    player.value = { ...luckyPlayer, rarity: rollRarity(luckyPlayer) }
     drawKey.value += 1
     imageMissing.value = false
-    saveToInventory(luckyPlayer)
+    await saveToInventory(player.value)
     notify({
-      type: isRare.value ? 'success' : 'info',
-      title: isRare.value ? '抽到傳說球員' : '抽卡完成',
+      type: rarity.value === 'legend' ? 'success' : 'info',
+      title: rarity.value === 'legend' ? '抽到傳說球員' : rarity.value === 'rare' ? '抽到稀有球員' : '抽卡完成',
       message: `${cleanPlayerName(luckyPlayer)} 已加入收藏冊。`
     })
-  } catch {
-    error.value = '請確認 Flask 是否啟動，以及 /api/get_player_pool 是否正常回傳資料。'
+  } catch (err) {
+    if (err.message === 'AUTH_REQUIRED') {
+      error.value = '請先登入或註冊，才能把抽到的球員存進收藏冊。'
+    } else if (err.message === 'SAVE_FAILED') {
+      error.value = '卡牌儲存失敗，請確認後端 API 是否正常後再試一次。'
+    } else {
+      error.value = '請確認 Flask 是否啟動，以及 /api/get_player_pool 是否正常回傳資料。'
+    }
   } finally {
     loading.value = false
   }
+}
+
+function rollRarity(p) {
+  const base = playerRarity(p)
+  if (base === 'legend') return 'legend'
+  const value = Math.random()
+  if (value < 0.04) return 'legend'
+  if (value < 0.22) return 'rare'
+  return base
 }
 
 async function searchPlayer() {

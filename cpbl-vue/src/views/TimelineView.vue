@@ -59,17 +59,27 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
+import { cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import { useGameMemory } from '../composables/useGameMemory'
 
 const { getAllTickets } = useGameMemory()
+const auth = inject('auth', null)
 const timeline = ref([])
 
 const visitedLocations = computed(() => new Set(timeline.value.map(ticket => ticket.location).filter(Boolean)).size)
 const latestDate = computed(() => timeline.value[0]?.date || '-')
 
-function loadTimeline() {
+async function loadTimeline() {
+  try {
+    if (auth?.token?.value) {
+      timeline.value = await cpblApi.getUserTickets(auth.token.value)
+      return
+    }
+  } catch {
+    timeline.value = []
+  }
   timeline.value = getAllTickets()
 }
 
