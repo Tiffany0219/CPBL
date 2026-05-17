@@ -238,10 +238,10 @@ const statusClass = computed(() => {
 })
 
 const inningText = computed(() => {
-  if (props.game.status !== 'LIVE') return ''
-  const value = cleanName(props.game.game_time)
-  if (!value || value === 'LIVE') return ''
-  return value.includes('局') ? `目前 ${value}` : value
+  const value = cleanName(props.game.current_inning || props.game.game_time)
+  if (!value || value === 'LIVE' || value === 'Final') return ''
+  if (props.game.status !== 'LIVE' && !value.includes('局')) return ''
+  return value.includes('目前') ? value : `目前 ${value}`
 })
 
 function cleanName(value) {

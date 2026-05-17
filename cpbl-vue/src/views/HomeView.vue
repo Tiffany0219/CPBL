@@ -34,7 +34,7 @@
       <i class="fa-solid fa-circle-play"></i>
       <div>
         <strong>現在進行中</strong>
-        <span>{{ liveGames[0].away }} {{ liveGames[0].away_score }} : {{ liveGames[0].home_score }} {{ liveGames[0].home }} · {{ liveGames[0].game_time || 'LIVE' }}</span>
+        <span>{{ liveGames[0].away }} {{ liveGames[0].away_score }} : {{ liveGames[0].home_score }} {{ liveGames[0].home }} · {{ liveGames[0].current_inning || liveGames[0].game_time || 'LIVE' }}</span>
       </div>
       <button type="button" @click="$emit('open-game', liveGames[0].id)">查看戰況</button>
     </section>

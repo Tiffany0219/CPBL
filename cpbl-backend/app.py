@@ -489,6 +489,23 @@ def normalize_ticket_payload(payload):
         "image": str(payload.get("image") or ""),
     }
 
+def infer_current_inning(game):
+    if game.game_status != "LIVE":
+        return ""
+    time_text = clean_player_name(game.game_time)
+    if "局" in time_text:
+        return time_text
+
+    def line_len(value):
+        if not value:
+            return 0
+        return len([item for item in str(value).split(",") if item != ""])
+
+    inning = max(line_len(game.away_line), line_len(game.home_line))
+    if inning > 0:
+        return f"{inning}局"
+    return "局數同步中"
+
 def today_key():
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -1232,6 +1249,7 @@ def get_games():
         "date": g.game_date,
         "game_sno": g.game_sno,
         "game_time": g.game_time,
+        "current_inning": infer_current_inning(g),
         "away": g.away_team,
         "home": g.home_team,
         "away_score": g.away_score,
