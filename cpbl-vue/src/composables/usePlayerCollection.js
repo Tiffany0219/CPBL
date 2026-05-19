@@ -26,11 +26,12 @@ export function teamColor(team = '') {
 
 export function playerRarity(player = {}) {
   const explicit = String(player.rarity || '').toLowerCase()
-  if (['common', 'rare', 'legend'].includes(explicit)) return explicit
+  if (['common', 'rare', 'holo', 'legend'].includes(explicit)) return explicit
   const name = cleanPlayerName(player)
   if (name === '頌恩') return 'legend'
   const score = Array.from(name).reduce((sum, char) => sum + char.charCodeAt(0), 0)
   if (score % 19 === 0) return 'legend'
+  if (score % 11 === 0) return 'holo'
   if (score % 5 === 0) return 'rare'
   return 'common'
 }
@@ -39,6 +40,7 @@ export function rarityLabel(rarity = 'common') {
   return {
     common: '一般',
     rare: '稀有',
+    holo: '閃卡',
     legend: '傳說'
   }[rarity] || '一般'
 }

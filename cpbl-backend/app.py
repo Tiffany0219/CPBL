@@ -55,7 +55,7 @@ USER_CARD_EXTRA_COLUMNS = {
 }
 
 TEAMS = ['中信兄弟', '味全龍', '樂天桃猿', '統一7-ELEVEn獅', '富邦悍將', '台鋼雄鷹']
-RARITIES = {"common", "rare", "legend"}
+RARITIES = {"common", "rare", "holo", "legend"}
 
 def ensure_game_schema():
     existing = {
@@ -516,6 +516,8 @@ def rarity_from_player(player):
     token = sum(ord(ch) for ch in name)
     if token % 19 == 0:
         return "legend"
+    if token % 11 == 0:
+        return "holo"
     if token % 5 == 0:
         return "rare"
     return "common"
@@ -1032,7 +1034,7 @@ def get_profile():
     cards = UserCard.query.filter_by(user_id=user.id).order_by(UserCard.count.desc(), UserCard.name.asc()).all()
     tickets = UserTicket.query.filter_by(user_id=user.id).order_by(UserTicket.created_at.desc()).limit(6).all()
     total_cards = sum(intish(card.count, 1) for card in cards)
-    rarity_counts = {"common": 0, "rare": 0, "legend": 0}
+    rarity_counts = {"common": 0, "rare": 0, "holo": 0, "legend": 0}
     team_counts = {}
     for card in cards:
         rarity_counts[card.rarity or "common"] = rarity_counts.get(card.rarity or "common", 0) + intish(card.count, 1)

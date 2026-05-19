@@ -68,6 +68,7 @@
           <div class="rarity-breakdown">
             <span class="rarity-pill common">一般 {{ rarityCount('common') }}</span>
             <span class="rarity-pill rare">稀有 {{ rarityCount('rare') }}</span>
+            <span class="rarity-pill holo">閃卡 {{ rarityCount('holo') }}</span>
             <span class="rarity-pill legend">傳說 {{ rarityCount('legend') }}</span>
           </div>
         </article>
