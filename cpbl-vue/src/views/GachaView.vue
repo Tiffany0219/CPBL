@@ -123,9 +123,8 @@
 
         <StateBox v-else-if="loading" type="loading" message="正在聯繫球探中..." />
         <StateBox v-else-if="error" type="error" title="抽卡失敗" :message="error" />
+        <div v-else-if="player" :key="drawKey" class="gacha-result-shell">
         <article
-          v-else-if="player"
-          :key="drawKey"
           :class="['player-card-site', rarityClass]"
           :style="{ '--team-color': teamColor }"
         >
@@ -186,6 +185,51 @@
             </button>
           </div>
         </article>
+        <aside class="cheer-player-card">
+          <div class="cheer-player-head">
+            <span>CHEER STAGE</span>
+            <strong>{{ cheerSong.title }}</strong>
+          </div>
+
+          <div v-if="cheerSong.hasVideo" class="cheer-video-frame">
+            <iframe
+              v-if="cheerPlayerReady"
+              :src="cheerEmbedUrl"
+              title="球員應援曲播放器"
+              allow="autoplay; encrypted-media; picture-in-picture"
+              allowfullscreen
+            ></iframe>
+            <button v-else type="button" @click="playCheerSong">
+              <i class="fa-solid fa-play"></i>
+              播放應援曲
+            </button>
+          </div>
+
+          <div v-else class="cheer-empty-state">
+            <i class="fa-solid fa-music"></i>
+            <h3>尚未收錄應援曲</h3>
+            <p>貼上 YouTube 連結或影片 ID，這位球員下次抽到就會直接播放。</p>
+            <form class="cheer-link-form" @submit.prevent="saveCheerLink">
+              <input v-model="cheerVideoInput" type="text" placeholder="貼上 YouTube 連結或影片 ID" />
+              <button type="submit">
+                <i class="fa-solid fa-plus"></i>
+                收錄
+              </button>
+            </form>
+          </div>
+
+          <div class="cheer-player-actions">
+            <button v-if="cheerSong.hasVideo" type="button" @click="playCheerSong">
+              <i class="fa-solid fa-volume-high"></i>
+              重新播放
+            </button>
+            <a :href="cheerSong.searchUrl" target="_blank" rel="noreferrer">
+              <i class="fa-brands fa-youtube"></i>
+              YouTube 搜尋
+            </a>
+          </div>
+        </aside>
+        </div>
         <div v-else class="card-display-empty">
           <div class="empty-pack-preview">
             <i class="fa-solid fa-baseball"></i>
@@ -203,6 +247,7 @@
 import { computed, inject, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
+import { resolveCheerSong, saveCheerOverride, youtubeEmbedUrl } from '../composables/useCheerSong'
 import {
   addPlayerToCollection,
   cleanPlayerName,
@@ -223,6 +268,9 @@ const opening = ref(false)
 const openingStep = ref('idle')
 const error = ref('')
 const imageMissing = ref(false)
+const cheerPlayerReady = ref(false)
+const cheerOverrideVersion = ref(0)
+const cheerVideoInput = ref('')
 const drawKey = ref(0)
 const recentDraws = ref([])
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
@@ -269,6 +317,11 @@ const rarityStars = computed(() => ({ common: '★', rare: '★★', holo: '✦�
 const teamColor = computed(() => getTeamColor(player.value?.team))
 const playerInitials = computed(() => getPlayerInitials(player.value))
 const playerImage = computed(() => `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`)
+const cheerSong = computed(() => {
+  cheerOverrideVersion.value
+  return resolveCheerSong(player.value || {})
+})
+const cheerEmbedUrl = computed(() => youtubeEmbedUrl(cheerSong.value.youtubeId))
 const isDrawing = computed(() => loading.value || opening.value)
 const isChaseCard = computed(() => ['holo', 'legend'].includes(rarity.value))
 const cardPoints = computed(() => auth?.user?.value?.card_points || 0)
@@ -330,6 +383,8 @@ async function drawCard() {
   openingStep.value = 'shuffle'
   error.value = ''
   player.value = null
+  cheerPlayerReady.value = false
+  cheerVideoInput.value = ''
   imageMissing.value = false
   try {
     const players = await getPool()
@@ -348,6 +403,7 @@ async function drawCard() {
     player.value = { ...luckyPlayer, rarity: rollRarity(luckyPlayer) }
     drawKey.value += 1
     imageMissing.value = false
+    playCheerSong()
     await saveToInventory(player.value)
     addRecentDraw(player.value)
     notify({
@@ -381,6 +437,8 @@ async function openPointPack(packType) {
   openingStep.value = 'shuffle'
   error.value = ''
   player.value = null
+  cheerPlayerReady.value = false
+  cheerVideoInput.value = ''
   imageMissing.value = false
   try {
     await delay(360)
@@ -390,11 +448,12 @@ async function openPointPack(packType) {
     const result = await cpblApi.buyPointPack(packType, auth.token.value)
     await delay(360)
     player.value = result.card
+    drawKey.value += 1
+    playCheerSong()
     if (auth.user) auth.user.value = result.user
     addPlayerToCollection(result.card)
     await auth.refreshCards?.()
     addRecentDraw(result.card)
-    drawKey.value += 1
     notify({
       type: ['holo', 'legend'].includes(playerRarity(result.card)) ? 'success' : 'info',
       title: packType === 'premium' ? '高級包開啟' : '標準包開啟',
@@ -413,6 +472,13 @@ async function openPointPack(packType) {
 
 function delay(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function playCheerSong() {
+  cheerPlayerReady.value = false
+  window.setTimeout(() => {
+    if (cheerSong.value.hasVideo) cheerPlayerReady.value = true
+  }, 30)
 }
 
 function addRecentDraw(card) {
@@ -449,6 +515,8 @@ async function searchPlayer() {
   loading.value = true
   error.value = ''
   player.value = null
+  cheerPlayerReady.value = false
+  cheerVideoInput.value = ''
   imageMissing.value = false
   try {
     const players = await getPool()
@@ -460,10 +528,29 @@ async function searchPlayer() {
     player.value = { ...found, rarity: playerRarity(found) }
     drawKey.value += 1
     imageMissing.value = false
+    playCheerSong()
   } catch {
     error.value = '搜尋失敗，請確認球員 API 是否正常。'
   } finally {
     loading.value = false
   }
+}
+
+function saveCheerLink() {
+  if (!player.value || !cheerVideoInput.value.trim()) {
+    notify({ type: 'warning', title: '還沒有連結', message: '請先貼上 YouTube 連結或影片 ID。' })
+    return
+  }
+
+  const saved = saveCheerOverride(player.value, cheerVideoInput.value)
+  if (!saved) {
+    notify({ type: 'error', title: '收錄失敗', message: '請確認連結或影片 ID 是否正確。' })
+    return
+  }
+
+  cheerOverrideVersion.value += 1
+  cheerVideoInput.value = ''
+  playCheerSong()
+  notify({ type: 'success', title: '應援曲已收錄', message: `${cleanName.value} 下次抽到會直接播放。` })
 }
 </script>

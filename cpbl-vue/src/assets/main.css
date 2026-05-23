@@ -2362,6 +2362,209 @@ button:disabled {
   box-shadow: 0 0 16px rgba(45, 212, 191, 0.46);
 }
 
+.gacha-result-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(300px, 360px);
+  justify-content: center;
+  align-items: center;
+  gap: 22px;
+}
+
+.cheer-player-card {
+  position: relative;
+  overflow: hidden;
+  align-self: stretch;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #cfe0ef;
+  border-top: 7px solid var(--team-color);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--team-color) 16%, transparent), transparent 34%),
+    linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 18px 46px rgba(11, 31, 51, 0.12);
+  animation: card-flip-in 0.72s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cheer-player-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent 0 48%, rgba(11, 31, 51, 0.035) 48% 52%, transparent 52%),
+    repeating-linear-gradient(0deg, transparent 0 17px, rgba(31, 95, 153, 0.04) 17px 18px);
+}
+
+.cheer-player-head,
+.cheer-video-frame,
+.cheer-empty-state,
+.cheer-player-actions {
+  position: relative;
+  z-index: 1;
+}
+
+.cheer-player-head span,
+.cheer-player-head strong {
+  display: block;
+}
+
+.cheer-player-head span {
+  color: #1f5f99;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+.cheer-player-head strong {
+  margin-top: 7px;
+  color: #0b1f33;
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.cheer-video-frame {
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  border: 1px solid #d7e5f2;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 20%, color-mix(in srgb, var(--team-color) 32%, transparent), transparent 38%),
+    #0b1f33;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.cheer-video-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.cheer-video-frame button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 999px;
+  padding: 13px 18px;
+  background: #ffffff;
+  color: #0b1f33;
+  font-weight: 900;
+  box-shadow: 0 12px 24px rgba(11, 31, 51, 0.2);
+}
+
+.cheer-empty-state {
+  flex: 1;
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  min-height: 230px;
+  padding: 18px;
+  border: 1px dashed #cfe0ef;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.cheer-empty-state > i {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--team-color) 12%, #eef7ff);
+  color: var(--team-color);
+  font-size: 18px;
+}
+
+.cheer-empty-state h3 {
+  margin: 0;
+  color: #0b1f33;
+  font-size: 21px;
+  font-weight: 900;
+}
+
+.cheer-empty-state p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.65;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.cheer-link-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cheer-link-form input {
+  min-width: 0;
+  border: 1px solid #d7e5f2;
+  border-radius: 12px;
+  padding: 10px 11px;
+  background: #ffffff;
+  color: #0b1f33;
+  font-weight: 800;
+  outline: none;
+}
+
+.cheer-link-form input:focus {
+  border-color: var(--team-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--team-color) 14%, transparent);
+}
+
+.cheer-link-form button,
+.cheer-player-actions button,
+.cheer-player-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 13px;
+  font-size: 13px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.cheer-link-form button {
+  border: 0;
+  padding: 0 12px;
+  background: #0b1f33;
+  color: #ffffff;
+}
+
+.cheer-player-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: auto;
+}
+
+.cheer-player-actions button,
+.cheer-player-actions a {
+  min-height: 42px;
+  padding: 0 13px;
+  border: 1px solid #d7e5f2;
+  background: #ffffff;
+  color: #0b1f33;
+}
+
+.cheer-player-actions a {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+
 .pack-opening {
   position: relative;
   z-index: 1;
@@ -6451,6 +6654,15 @@ button:disabled {
   .gacha-layout {
     grid-template-columns: 1fr;
   }
+  .gacha-result-shell {
+    grid-template-columns: 1fr;
+  }
+  .cheer-player-card {
+    width: 100%;
+    max-width: 520px;
+    justify-self: center;
+    min-height: 360px;
+  }
   .stats-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -6672,5 +6884,11 @@ button:disabled {
   .player-card-site {
     width: 100%;
     max-width: 340px;
+  }
+  .cheer-link-form {
+    grid-template-columns: 1fr;
+  }
+  .cheer-link-form button {
+    min-height: 42px;
   }
 }
