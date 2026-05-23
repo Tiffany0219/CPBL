@@ -50,6 +50,27 @@
       @close="closeGameDetail"
     />
 
+    <div v-if="confirmState.visible" class="modal confirm-modal-backdrop">
+      <section class="confirm-modal">
+        <div class="confirm-modal-icon">
+          <i :class="confirmState.icon"></i>
+        </div>
+        <div>
+          <p class="eyebrow">CONFIRM</p>
+          <h3>{{ confirmState.title }}</h3>
+          <p>{{ confirmState.message }}</p>
+        </div>
+        <div class="confirm-modal-actions">
+          <button class="btn-soft" type="button" @click="resolveConfirm(false)">
+            {{ confirmState.cancelText }}
+          </button>
+          <button :class="['btn-primary', { danger: confirmState.danger }]" type="button" @click="resolveConfirm(true)">
+            {{ confirmState.confirmText }}
+          </button>
+        </div>
+      </section>
+    </div>
+
     <div class="toast-stack" aria-live="polite">
       <article v-for="toast in toasts" :key="toast.id" :class="['toast-item', toast.type]">
         <i :class="toast.icon"></i>
@@ -94,6 +115,16 @@ const toasts = ref([])
 const authUser = ref(null)
 const authToken = ref(localStorage.getItem('cpbl_auth_token') || '')
 const authLoading = ref(false)
+const confirmState = ref({
+  visible: false,
+  title: '',
+  message: '',
+  confirmText: '確定',
+  cancelText: '取消',
+  icon: 'fa-solid fa-circle-question',
+  danger: false,
+  resolver: null
+})
 let healthTimer = null
 
 const protectedPages = {
@@ -146,11 +177,42 @@ function handlePageChange(page) {
 }
 
 provide('notify', notify)
+provide('confirmAction', confirmAction)
 provide('auth', {
   user: authUser,
   token: authToken,
   refreshCards: refreshAuthCards
 })
+
+function confirmAction(options = {}) {
+  return new Promise(resolve => {
+    confirmState.value = {
+      visible: true,
+      title: options.title || '確認操作',
+      message: options.message || '確定要繼續嗎？',
+      confirmText: options.confirmText || '確定',
+      cancelText: options.cancelText || '取消',
+      icon: options.icon || (options.danger ? 'fa-solid fa-triangle-exclamation' : 'fa-solid fa-circle-question'),
+      danger: Boolean(options.danger),
+      resolver: resolve
+    }
+  })
+}
+
+function resolveConfirm(value) {
+  const resolver = confirmState.value.resolver
+  confirmState.value = {
+    visible: false,
+    title: '',
+    message: '',
+    confirmText: '確定',
+    cancelText: '取消',
+    icon: 'fa-solid fa-circle-question',
+    danger: false,
+    resolver: null
+  }
+  resolver?.(value)
+}
 
 function collectionListToMap(cards = []) {
   return cards.reduce((map, card) => {

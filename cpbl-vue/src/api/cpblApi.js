@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5100/api'
+export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:5101/api'
 
 function buildQuery(params = {}) {
   const search = new URLSearchParams()
@@ -78,6 +78,26 @@ export const cpblApi = {
 
   clearUserCards(token) {
     return request('/cards', { method: 'DELETE', token })
+  },
+
+  convertUserCard(name, count, token) {
+    return postJson(`/cards/${encodeURIComponent(name)}/convert`, { count }, token)
+  },
+
+  convertDuplicateCards(token) {
+    return postJson('/cards/convert-duplicates', {}, token)
+  },
+
+  getLineup(token) {
+    return request('/lineup', { token })
+  },
+
+  saveLineup(slots, token) {
+    return request('/lineup', {
+      method: 'PUT',
+      body: JSON.stringify({ slots }),
+      token
+    })
   },
 
   getUserTickets(token, gameId) {

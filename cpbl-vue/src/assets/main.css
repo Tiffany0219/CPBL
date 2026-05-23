@@ -3162,7 +3162,7 @@ button:disabled {
 
 .collection-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -3575,6 +3575,67 @@ button:disabled {
   background: #fff;
   border-radius: 20px;
   box-shadow: 0 24px 80px rgba(17, 24, 39, 0.24);
+}
+
+.confirm-modal-backdrop {
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.confirm-modal {
+  width: min(440px, 100%);
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid #d7e5f2;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(31, 95, 153, 0.12), transparent 32%),
+    #ffffff;
+  box-shadow: 0 26px 80px rgba(11, 31, 51, 0.26);
+}
+
+.confirm-modal-icon {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background: #e9f7ff;
+  color: #1f5f99;
+  font-size: 22px;
+}
+
+.confirm-modal h3 {
+  margin: 4px 0 8px;
+  color: #0b1f33;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.confirm-modal p:not(.eyebrow) {
+  margin: 0;
+  color: #64748b;
+  font-weight: 800;
+  line-height: 1.65;
+}
+
+.confirm-modal-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.btn-primary.danger {
+  background: #b91c1c;
+}
+
+.btn-primary.danger:hover {
+  background: #991b1b;
 }
 .close-btn {
   position: absolute;
@@ -5453,6 +5514,40 @@ button:disabled {
   font-weight: 900;
 }
 
+.daily-reward-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 20px;
+  border: 1px solid #d7e5f2;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 92% 12%, rgba(251, 191, 36, 0.16), transparent 26%),
+    linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: var(--shadow-sm);
+}
+
+.daily-reward-card h3 {
+  margin: 0 0 8px;
+  color: #0b1f33;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.daily-reward-card p:not(.eyebrow) {
+  margin: 0;
+  color: #64748b;
+  font-weight: 800;
+  line-height: 1.65;
+}
+
+.daily-reward-card p span {
+  color: #0f766e;
+  font-weight: 900;
+}
+
 .profile-hero-card p:not(.eyebrow) {
   margin: 0;
   color: #64748b;
@@ -6404,6 +6499,16 @@ button:disabled {
   }
   .card-detail-actions {
     align-items: stretch;
+    flex-direction: column;
+  }
+  .daily-reward-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .confirm-modal {
+    grid-template-columns: 1fr;
+  }
+  .confirm-modal-actions {
     flex-direction: column;
   }
   .collection-player-card {

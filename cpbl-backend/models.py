@@ -33,6 +33,8 @@ class User(db.Model):
     api_token = db.Column(db.String(80), unique=True, nullable=False)
     favorite_team = db.Column(db.String(100), default="")
     last_daily_reward_date = db.Column(db.String(10), default="")
+    daily_streak = db.Column(db.Integer, default=0)
+    card_points = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 
 
@@ -63,3 +65,10 @@ class UserTicket(db.Model):
     note = db.Column(db.Text, default="")
     image = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+
+class UserLineup(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, unique=True)
+    slots = db.Column(db.Text, default="[]")
+    updated_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())

@@ -54,6 +54,30 @@
           <span>最多收藏</span>
           <strong>{{ profile?.summary?.top_team || '-' }}</strong>
         </article>
+        <article class="lineup-summary-card">
+          <span>收藏點數</span>
+          <strong>{{ profile?.summary?.card_points || 0 }}</strong>
+        </article>
+        <article class="lineup-summary-card">
+          <span>連續領獎</span>
+          <strong>{{ profile?.summary?.daily_streak || 0 }} 天</strong>
+        </article>
+      </section>
+
+      <section class="daily-reward-card">
+        <div>
+          <p class="eyebrow">DAILY REWARD</p>
+          <h3>{{ profile?.summary?.daily_claimed ? '今日已領取' : '今日可以領卡' }}</h3>
+          <p>
+            目前連續 {{ profile?.summary?.daily_streak || 0 }} 天，
+            下一次領取是第 {{ profile?.summary?.next_daily_streak || 1 }} 天。
+            <span v-if="profile?.summary?.next_daily_guarantee">下一領保底閃卡以上。</span>
+          </p>
+        </div>
+        <button class="btn-primary" type="button" :disabled="rewardLoading || profile?.summary?.daily_claimed" @click="claimDaily">
+          <i class="fa-solid fa-gift"></i>
+          {{ profile?.summary?.daily_claimed ? '已領取' : '領每日卡牌' }}
+        </button>
       </section>
 
       <section class="profile-grid">
@@ -164,7 +188,11 @@ async function claimDaily() {
     if (auth.user) auth.user.value = result.user
     await auth.refreshCards?.()
     await loadProfile()
-    notify({ type: 'success', title: '每日獎勵已領取', message: `獲得 ${result.card.name}。` })
+    notify({
+      type: 'success',
+      title: result.guaranteed_bonus ? '保底閃卡獎勵' : '每日獎勵已領取',
+      message: `連續 ${result.streak} 天，獲得 ${result.card.name}。`
+    })
   } catch (err) {
     notify({ type: 'warning', title: '無法領取', message: err?.message?.includes('已經') ? '今天已經領過囉。' : '請確認球員池或後端 API。' })
   } finally {

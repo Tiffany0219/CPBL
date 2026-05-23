@@ -13,6 +13,11 @@
           重新整理
         </button>
 
+        <button class="btn-soft" type="button" :disabled="duplicateCount === 0 || !auth?.token?.value" @click="convertDuplicates">
+          <i class="fa-solid fa-coins"></i>
+          重複卡換點數
+        </button>
+
         <button class="btn-soft danger" type="button" :disabled="collection.length === 0" @click="clearCollection">
           <i class="fa-solid fa-trash"></i>
           清空收藏
@@ -39,6 +44,11 @@
       <article class="lineup-summary-card">
         <span>最多收藏</span>
         <strong>{{ topTeam }}</strong>
+      </article>
+
+      <article class="lineup-summary-card">
+        <span>重複卡 / 點數</span>
+        <strong>{{ duplicateCount }} / {{ cardPoints }}</strong>
       </article>
     </section>
 
@@ -169,6 +179,10 @@
             <strong>x{{ selectedPlayer.count || 1 }}</strong>
           </div>
           <div>
+            <span>可換點數</span>
+            <strong>{{ duplicatePoints(selectedPlayer) }}</strong>
+          </div>
+          <div>
             <span>球隊</span>
             <strong>{{ selectedPlayer.team || '未知' }}</strong>
           </div>
@@ -186,6 +200,10 @@
           <button class="btn-soft" type="button" @click="copyPlayerName(selectedPlayer)">
             <i class="fa-solid fa-copy"></i>
             複製姓名
+          </button>
+          <button class="btn-soft" type="button" :disabled="(selectedPlayer.count || 1) <= 1 || !auth?.token?.value" @click="convertOneDuplicate(selectedPlayer)">
+            <i class="fa-solid fa-coins"></i>
+            分解重複卡
           </button>
           <button class="btn-primary" type="button" @click="selectedPlayer = null">
             <i class="fa-solid fa-check"></i>
@@ -215,6 +233,7 @@ import {
 
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const notify = inject('notify', () => {})
+const confirmAction = inject('confirmAction', async () => false)
 const auth = inject('auth', null)
 const collection = ref([])
 const keyword = ref('')
@@ -255,6 +274,8 @@ const filteredCollection = computed(() => {
 
 const totalCards = computed(() => collection.value.reduce((sum, player) => sum + Number(player.count || 1), 0))
 const ownedTeams = computed(() => new Set(collection.value.map(player => player.team).filter(Boolean)).size)
+const duplicateCount = computed(() => collection.value.reduce((sum, player) => sum + Math.max(0, Number(player.count || 1) - 1), 0))
+const cardPoints = computed(() => auth?.user?.value?.card_points || 0)
 const positionOptions = computed(() => [...new Set(collection.value.map(player => player.position).filter(Boolean))]
   .sort((a, b) => a.localeCompare(b, 'zh-Hant')))
 const topTeam = computed(() => {
@@ -283,6 +304,19 @@ function playerImage(player) {
 function cardSerial(player) {
   const base = Array.from(cleanName(player)).reduce((sum, char) => sum + char.charCodeAt(0), 0)
   return `CPBL-${String(base % 9999).padStart(4, '0')}`
+}
+
+function rarityPointValue(rarity) {
+  return {
+    common: 6,
+    rare: 12,
+    holo: 28,
+    legend: 60
+  }[rarity || 'common'] || 6
+}
+
+function duplicatePoints(player) {
+  return Math.max(0, Number(player.count || 1) - 1) * rarityPointValue(player.rarity)
 }
 
 function sortPlayers(a, b) {
@@ -331,7 +365,12 @@ async function loadCollection() {
 }
 
 async function removePlayer(player) {
-  const confirmed = confirm(`確定要移除 ${cleanName(player)} 嗎？`)
+  const confirmed = await confirmAction({
+    title: '移除球員卡',
+    message: `確定要移除 ${cleanName(player)} 嗎？這張卡會從收藏冊消失。`,
+    confirmText: '移除',
+    danger: true
+  })
   if (!confirmed) return
 
   if (auth?.token?.value) {
@@ -348,7 +387,12 @@ async function removePlayer(player) {
 }
 
 async function clearCollection() {
-  const confirmed = confirm('確定要清空整本球員收藏冊嗎？')
+  const confirmed = await confirmAction({
+    title: '清空收藏冊',
+    message: '確定要清空整本球員收藏冊嗎？這個動作無法復原。',
+    confirmText: '清空',
+    danger: true
+  })
   if (!confirmed) return
 
   if (auth?.token?.value) {
@@ -362,6 +406,53 @@ async function clearCollection() {
 
   clearPlayerCollection()
   await loadCollection()
+}
+
+async function convertDuplicates() {
+  if (!auth?.token?.value) {
+    notify({ type: 'info', title: '請先登入', message: '重複卡換點數需要同步到會員帳號。' })
+    return
+  }
+
+  const confirmed = await confirmAction({
+    title: '重複卡換點數',
+    message: `將 ${duplicateCount.value} 張重複卡分解成收藏點數，每位球員會保留 1 張。`,
+    confirmText: '換成點數',
+    icon: 'fa-solid fa-coins'
+  })
+  if (!confirmed) return
+
+  try {
+    const result = await cpblApi.convertDuplicateCards(auth.token.value)
+    if (auth.user) auth.user.value = result.user
+    saveCollectionMap(collectionListToMap(result.cards || []))
+    collection.value = getCollectionList()
+    notify({ type: 'success', title: '已兌換點數', message: `分解 ${result.converted} 張，獲得 ${result.points} 點。` })
+  } catch (err) {
+    notify({ type: 'warning', title: '沒有可分解卡', message: err?.message?.includes('重複') ? '目前沒有可換點數的重複卡。' : '兌換暫時失敗。' })
+  }
+}
+
+async function convertOneDuplicate(player) {
+  if (!auth?.token?.value || Number(player.count || 1) <= 1) return
+
+  const confirmed = await confirmAction({
+    title: '分解重複卡',
+    message: `分解 1 張 ${cleanName(player)} 的重複卡，保留至少 1 張在收藏冊。`,
+    confirmText: '分解',
+    icon: 'fa-solid fa-coins'
+  })
+  if (!confirmed) return
+
+  try {
+    const result = await cpblApi.convertUserCard(cleanName(player), 1, auth.token.value)
+    if (auth.user) auth.user.value = result.user
+    await loadCollection()
+    selectedPlayer.value = result.card
+    notify({ type: 'success', title: '已獲得點數', message: `獲得 ${result.points} 點收藏點數。` })
+  } catch {
+    notify({ type: 'warning', title: '分解失敗', message: '這張卡目前沒有重複卡可分解。' })
+  }
 }
 
 async function copyPlayerName(player) {

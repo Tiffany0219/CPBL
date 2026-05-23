@@ -1,7 +1,7 @@
 import os
 import re, time, json, traceback
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -15,7 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sqlalchemy import or_, text
 from extensions import db
-from models import Game, User, UserCard, UserTicket
+from models import Game, User, UserCard, UserLineup, UserTicket
 from services.cpbl_official import (
     NEWS_FALLBACK,
     TOP_STATS_SOURCE_URL,
@@ -48,6 +48,8 @@ GAME_EXTRA_COLUMNS = {
 USER_EXTRA_COLUMNS = {
     "favorite_team": "VARCHAR(100) DEFAULT ''",
     "last_daily_reward_date": "VARCHAR(10) DEFAULT ''",
+    "daily_streak": "INTEGER DEFAULT 0",
+    "card_points": "INTEGER DEFAULT 0",
 }
 
 USER_CARD_EXTRA_COLUMNS = {
@@ -410,6 +412,8 @@ def user_to_dict(user):
         "username": user.username,
         "favorite_team": user.favorite_team or "",
         "last_daily_reward_date": user.last_daily_reward_date or "",
+        "daily_streak": intish(user.daily_streak),
+        "card_points": intish(user.card_points),
     }
 
 def card_to_dict(card):
@@ -436,6 +440,12 @@ def ticket_to_dict(ticket):
         "note": ticket.note,
         "image": ticket.image,
         "createdAt": ticket.created_at.isoformat() if ticket.created_at else "",
+    }
+
+def lineup_to_dict(lineup):
+    return {
+        "slots": parse_json_payload(lineup.slots if lineup else "[]", []),
+        "updatedAt": lineup.updated_at.isoformat() if lineup and lineup.updated_at else "",
     }
 
 def get_auth_user():
@@ -489,6 +499,22 @@ def normalize_ticket_payload(payload):
         "image": str(payload.get("image") or ""),
     }
 
+def normalize_lineup_payload(payload):
+    slots = payload.get("slots") if isinstance(payload, dict) else payload
+    if not isinstance(slots, list):
+        raise ValueError("打線格式錯誤")
+
+    normalized = []
+    for index in range(9):
+        raw = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
+        player = raw.get("player")
+        normalized.append({
+            "order": index + 1,
+            "defense": str(raw.get("defense") or "")[:20],
+            "player": normalize_card_payload(player) if isinstance(player, dict) and clean_player_name(player.get("name")) else None,
+        })
+    return normalized
+
 def infer_current_inning(game):
     if game.game_status != "LIVE":
         return ""
@@ -509,6 +535,22 @@ def infer_current_inning(game):
 def today_key():
     return datetime.now().strftime("%Y-%m-%d")
 
+def yesterday_key():
+    return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+def next_streak_value(user):
+    if user.last_daily_reward_date == yesterday_key():
+        return intish(user.daily_streak) + 1
+    return 1
+
+def rarity_point_value(rarity):
+    return {
+        "common": 6,
+        "rare": 12,
+        "holo": 28,
+        "legend": 60,
+    }.get(rarity or "common", 6)
+
 def rarity_from_player(player):
     name = clean_player_name(player.get("name"))
     if name == "頌恩":
@@ -522,7 +564,7 @@ def rarity_from_player(player):
         return "rare"
     return "common"
 
-def choose_reward_player():
+def choose_reward_player(guaranteed_holo=False):
     players = read_json_file(PLAYERS_POOL_PATH, [])
     if not isinstance(players, list) or not players:
         return None
@@ -531,9 +573,15 @@ def choose_reward_player():
         if isinstance(player, dict) and clean_player_name(player.get("name")) and "二軍" not in str(player.get("team") or "")
     ]
     pool = usable or players
+    if guaranteed_holo:
+        rare_pool = [player for player in pool if rarity_from_player(player) in {"holo", "legend"}]
+        if rare_pool:
+            pool = rare_pool
     index = int(datetime.now().strftime("%j")) % len(pool)
     player = dict(pool[index])
     player["rarity"] = rarity_from_player(player)
+    if guaranteed_holo and player["rarity"] in {"common", "rare"}:
+        player["rarity"] = "holo"
     return player
 
 # --- 格式化輔助函數：確保數據轉成陣列 ---
@@ -1053,6 +1101,10 @@ def get_profile():
             "top_team": top_team,
             "rarities": rarity_counts,
             "daily_claimed": user.last_daily_reward_date == today_key(),
+            "daily_streak": intish(user.daily_streak),
+            "next_daily_streak": intish(user.daily_streak) + 1 if user.last_daily_reward_date == today_key() else next_streak_value(user),
+            "next_daily_guarantee": ((intish(user.daily_streak) + 1 if user.last_daily_reward_date == today_key() else next_streak_value(user)) % 7 == 0),
+            "card_points": intish(user.card_points),
         },
         "recent_cards": [card_to_dict(card) for card in cards[:6]],
         "leaderboard": leaderboard,
@@ -1081,15 +1133,24 @@ def claim_daily_reward():
     if user.last_daily_reward_date == today_key():
         return jsonify({"error": "今天已經領過每日獎勵"}), 409
 
-    player = choose_reward_player()
+    streak = next_streak_value(user)
+    guaranteed_holo = streak % 7 == 0
+    player = choose_reward_player(guaranteed_holo=guaranteed_holo)
     if not player:
         return jsonify({"error": "球員池沒有資料，請先同步球員資料"}), 400
 
     payload = normalize_card_payload({ **player, "count": 1 })
     card = upsert_user_card(user, payload)
     user.last_daily_reward_date = today_key()
+    user.daily_streak = streak
     db.session.commit()
-    return jsonify({"status": "success", "card": card_to_dict(card), "user": user_to_dict(user)})
+    return jsonify({
+        "status": "success",
+        "card": card_to_dict(card),
+        "user": user_to_dict(user),
+        "streak": streak,
+        "guaranteed_bonus": guaranteed_holo,
+    })
 
 @app.route('/api/cards', methods=['GET'])
 def get_user_cards():
@@ -1134,6 +1195,81 @@ def clear_user_cards():
     UserCard.query.filter_by(user_id=user.id).delete()
     db.session.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/cards/<path:player_name>/convert', methods=['POST'])
+def convert_user_card(player_name):
+    user, error = require_auth_user()
+    if error:
+        return error
+    card = UserCard.query.filter_by(user_id=user.id, name=clean_player_name(player_name)).first()
+    if not card or intish(card.count, 1) <= 1:
+        return jsonify({"error": "這張卡沒有可分解的重複卡"}), 400
+
+    data = request.get_json(silent=True) or {}
+    max_convert = intish(card.count, 1) - 1
+    amount = min(max(1, intish(data.get("count"), max_convert)), max_convert)
+    points = amount * rarity_point_value(card.rarity)
+    card.count = intish(card.count, 1) - amount
+    user.card_points = intish(user.card_points) + points
+    db.session.commit()
+    return jsonify({"status": "success", "points": points, "card": card_to_dict(card), "user": user_to_dict(user)})
+
+@app.route('/api/cards/convert-duplicates', methods=['POST'])
+def convert_duplicate_cards():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    cards = UserCard.query.filter_by(user_id=user.id).all()
+    total_points = 0
+    converted = 0
+    for card in cards:
+        extra = max(0, intish(card.count, 1) - 1)
+        if not extra:
+            continue
+        converted += extra
+        total_points += extra * rarity_point_value(card.rarity)
+        card.count = 1
+
+    if converted == 0:
+        return jsonify({"error": "目前沒有可分解的重複卡"}), 400
+
+    user.card_points = intish(user.card_points) + total_points
+    db.session.commit()
+    return jsonify({
+        "status": "success",
+        "converted": converted,
+        "points": total_points,
+        "cards": [card_to_dict(card) for card in cards],
+        "user": user_to_dict(user),
+    })
+
+@app.route('/api/lineup', methods=['GET'])
+def get_user_lineup():
+    user, error = require_auth_user()
+    if error:
+        return error
+    lineup = UserLineup.query.filter_by(user_id=user.id).first()
+    return jsonify(lineup_to_dict(lineup))
+
+@app.route('/api/lineup', methods=['PUT'])
+def save_user_lineup():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    try:
+        slots = normalize_lineup_payload(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    lineup = UserLineup.query.filter_by(user_id=user.id).first()
+    if not lineup:
+        lineup = UserLineup(user_id=user.id)
+        db.session.add(lineup)
+    lineup.slots = json.dumps(slots, ensure_ascii=False)
+    db.session.commit()
+    return jsonify({"status": "success", **lineup_to_dict(lineup)})
 
 @app.route('/api/tickets')
 def get_user_tickets():

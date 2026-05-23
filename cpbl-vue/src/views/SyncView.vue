@@ -98,11 +98,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { cpblApi } from '../api/cpblApi'
 import { SEASON_YEAR } from '../utils'
 import StateBox from '../components/StateBox.vue'
 
+const confirmAction = inject('confirmAction', async () => false)
 const currentMonth = new Date().getMonth() + 1
 const targetMonth = ref(currentMonth)
 const checking = ref(false)
@@ -210,7 +211,15 @@ function normalizeError(err) {
 }
 
 async function runAction(action) {
-  if (action.confirm && !confirm(action.confirm)) return
+  if (action.confirm) {
+    const confirmed = await confirmAction({
+      title: '執行同步任務',
+      message: action.confirm,
+      confirmText: '執行',
+      icon: action.icon
+    })
+    if (!confirmed) return
+  }
 
   runningKey.value = action.key
   addLog('running', action.title, '任務已開始')

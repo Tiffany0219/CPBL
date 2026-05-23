@@ -13,7 +13,7 @@
           重新整理收藏
         </button>
 
-        <button class="btn-soft danger" type="button" :disabled="filledCount === 0" @click="clearLineup">
+        <button class="btn-soft danger" type="button" :disabled="filledCount === 0 || lineupSaving" @click="clearLineup">
           <i class="fa-solid fa-trash"></i>
           清空打線
         </button>
@@ -34,6 +34,11 @@
       <article class="lineup-summary-card">
         <span>目前棒次</span>
         <strong>第 {{ activeSlot.order }} 棒</strong>
+      </article>
+
+      <article class="lineup-summary-card">
+        <span>同步狀態</span>
+        <strong>{{ lineupStatus }}</strong>
       </article>
     </section>
 
@@ -150,8 +155,8 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, inject, onMounted, ref } from 'vue'
-import { API_BASE } from '../api/cpblApi'
+import { computed, defineComponent, h, inject, onMounted, ref, watch } from 'vue'
+import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import {
   TEAMS,
@@ -165,6 +170,8 @@ import {
 const LINEUP_KEY = 'my_cpbl_lineup'
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const auth = inject('auth', null)
+const notify = inject('notify', () => {})
+const confirmAction = inject('confirmAction', async () => false)
 
 const positions = ['投手', '捕手', '一壘', '二壘', '三壘', '游擊', '左外野', '中外野', '右外野', '指定打擊']
 const defaultPositions = ['中外野', '二壘', '游擊', '一壘', '三壘', '左外野', '右外野', '捕手', '指定打擊']
@@ -176,9 +183,16 @@ const activeSlotIndex = ref(0)
 const keyword = ref('')
 const teamFilter = ref('')
 const failedImages = ref({})
+const lineupSaving = ref(false)
+const lineupSyncedAt = ref('')
 
 const activeSlot = computed(() => lineup.value[activeSlotIndex.value] || lineup.value[0])
 const filledCount = computed(() => lineup.value.filter(slot => slot.player).length)
+const lineupStatus = computed(() => {
+  if (!auth?.token?.value) return '本機'
+  if (lineupSaving.value) return '同步中'
+  return lineupSyncedAt.value ? '已同步' : '帳號'
+})
 const lineupStorageKey = computed(() => {
   const userId = auth?.user?.value?.id
   return userId ? `${LINEUP_KEY}_${userId}` : LINEUP_KEY
@@ -256,11 +270,31 @@ function normalizePlayer(player, fallbackName = '') {
   return normalizeCollectionPlayer(player, fallbackName)
 }
 
-function loadCollection() {
+async function loadCollection() {
+  if (auth?.token?.value) {
+    try {
+      const cards = await cpblApi.getUserCards(auth.token.value)
+      collection.value = cards.map(card => normalizePlayer(card))
+      return
+    } catch {
+      notify({ type: 'warning', title: '收藏同步失敗', message: '暫時改用本機收藏資料。' })
+    }
+  }
   collection.value = getCollectionList()
 }
 
-function loadLineup() {
+async function loadLineup() {
+  if (auth?.token?.value) {
+    try {
+      const result = await cpblApi.getLineup(auth.token.value)
+      applySavedLineup(result?.slots || [])
+      lineupSyncedAt.value = result?.updatedAt || ''
+      return
+    } catch {
+      notify({ type: 'warning', title: '打線同步失敗', message: '暫時改用本機打線。' })
+    }
+  }
+
   let saved = []
   try {
     saved = JSON.parse(localStorage.getItem(lineupStorageKey.value) || '[]')
@@ -268,6 +302,10 @@ function loadLineup() {
     saved = []
   }
 
+  applySavedLineup(saved)
+}
+
+function applySavedLineup(saved) {
   if (!Array.isArray(saved) || saved.length === 0) {
     lineup.value = createEmptyLineup()
     return
@@ -285,12 +323,23 @@ function loadLineup() {
   })
 }
 
-function saveLineup() {
+async function saveLineup() {
   localStorage.setItem(lineupStorageKey.value, JSON.stringify(lineup.value))
+  if (!auth?.token?.value) return
+
+  lineupSaving.value = true
+  try {
+    const result = await cpblApi.saveLineup(lineup.value, auth.token.value)
+    lineupSyncedAt.value = result?.updatedAt || new Date().toISOString()
+  } catch {
+    notify({ type: 'warning', title: '打線未同步', message: '已先保存在本機，稍後可重新整理再試。' })
+  } finally {
+    lineupSaving.value = false
+  }
 }
 
-function reloadCollection() {
-  loadCollection()
+async function reloadCollection() {
+  await loadCollection()
 }
 
 function isInLineup(player) {
@@ -343,17 +392,27 @@ function swapSlots(index, targetIndex) {
   saveLineup()
 }
 
-function clearLineup() {
-  const confirmed = confirm('確定要清空目前打線嗎？')
+async function clearLineup() {
+  const confirmed = await confirmAction({
+    title: '清空打線',
+    message: '確定要清空目前九人打線嗎？登入狀態下也會同步清空。',
+    confirmText: '清空',
+    danger: true
+  })
   if (!confirmed) return
 
   lineup.value = createEmptyLineup()
   activeSlotIndex.value = 0
-  saveLineup()
+  await saveLineup()
 }
 
-onMounted(() => {
-  loadCollection()
-  loadLineup()
+watch(() => auth?.token?.value, async () => {
+  await loadCollection()
+  await loadLineup()
+})
+
+onMounted(async () => {
+  await loadCollection()
+  await loadLineup()
 })
 </script>

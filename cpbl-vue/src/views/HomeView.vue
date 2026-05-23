@@ -204,6 +204,7 @@ import { useGameMemory } from '../composables/useGameMemory'
 defineEmits(['open-game', 'change-page'])
 
 const notify = inject('notify', () => {})
+const confirmAction = inject('confirmAction', async () => false)
 const auth = inject('auth', null)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const homeDate = ref(getTodayMMDD())
@@ -551,7 +552,12 @@ async function handleSaveTicket(payload) {
 async function handleRemoveTicket(ticketId) {
   if (!selectedTicketGame.value) return
 
-  const confirmed = confirm('確定要刪除這筆觀賽紀錄嗎？')
+  const confirmed = await confirmAction({
+    title: '刪除觀賽紀錄',
+    message: '確定要刪除這筆觀賽紀錄嗎？',
+    confirmText: '刪除',
+    danger: true
+  })
   if (!confirmed) return
 
   try {
