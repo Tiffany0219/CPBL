@@ -2106,6 +2106,74 @@ button:disabled {
   color: #b45309;
 }
 
+.point-shop-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #d7e5f2;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(251, 191, 36, 0.14), transparent 34%),
+    #ffffff;
+}
+
+.point-shop-head,
+.point-shop-card button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.point-shop-head span,
+.point-shop-head strong {
+  display: block;
+}
+
+.point-shop-head span {
+  color: #1f5f99;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+}
+
+.point-shop-head strong {
+  margin-top: 4px;
+  color: #0b1f33;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.point-shop-head i {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.point-shop-card button {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d7e5f2;
+  border-radius: 13px;
+  background: #f8fbff;
+  color: #0b1f33;
+  font-weight: 900;
+}
+
+.point-shop-card button:not(:disabled):hover {
+  border-color: #1f5f99;
+  background: #eef7ff;
+}
+
+.point-shop-card button b {
+  color: #0f766e;
+}
+
 .recent-draws {
   margin-top: 18px;
   padding-top: 18px;
@@ -3407,6 +3475,52 @@ button:disabled {
 
 .sync-health-card small {
   color: #9ca3af;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sync-status-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.sync-status-strip article {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #d7e5f2;
+  border-radius: 15px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.sync-status-strip span,
+.sync-status-strip strong,
+.sync-status-strip small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-status-strip span {
+  color: #1f5f99;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+.sync-status-strip strong {
+  margin-top: 5px;
+  color: #0b1f33;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.sync-status-strip small {
+  margin-top: 4px;
+  color: #64748b;
   font-size: 12px;
   font-weight: 800;
 }
@@ -5813,6 +5927,24 @@ button:disabled {
   margin-top: 18px;
 }
 
+.lineup-share-modal {
+  max-width: 520px;
+  text-align: center;
+}
+
+.lineup-share-modal h3 {
+  margin: 0 0 16px;
+  color: #0b1f33;
+  font-size: 26px;
+  font-weight: 900;
+}
+
+.lineup-share-modal img {
+  width: 100%;
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(11, 31, 51, 0.18);
+}
+
 .ticket-delete-btn {
   position: absolute;
   right: 10px;
@@ -6293,6 +6425,9 @@ button:disabled {
   .sync-health-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .sync-status-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .sync-layout {
     grid-template-columns: 1fr;
   }
@@ -6456,6 +6591,9 @@ button:disabled {
     min-height: 180px;
   }
   .sync-health-grid {
+    grid-template-columns: 1fr;
+  }
+  .sync-status-strip {
     grid-template-columns: 1fr;
   }
   .sync-action-card {

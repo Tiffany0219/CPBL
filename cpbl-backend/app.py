@@ -1,5 +1,6 @@
 import os
 import re, time, json, traceback
+import random
 import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +29,7 @@ DATA_DIR = Path(os.environ.get("CPBL_DATA_DIR", BASE_DIR)).resolve()
 SEASON_YEAR = int(os.environ.get("CPBL_SEASON_YEAR", datetime.now().year))
 STANDINGS_PATH = DATA_DIR / "standings.json"
 PLAYERS_POOL_PATH = DATA_DIR / "players_pool.json"
+SYNC_STATUS_PATH = DATA_DIR / "sync_status.json"
 
 app = Flask(__name__)
 CORS(app)
@@ -58,6 +60,7 @@ USER_CARD_EXTRA_COLUMNS = {
 
 TEAMS = ['中信兄弟', '味全龍', '樂天桃猿', '統一7-ELEVEn獅', '富邦悍將', '台鋼雄鷹']
 RARITIES = {"common", "rare", "holo", "legend"}
+PACK_COSTS = {"standard": 18, "premium": 60}
 
 def ensure_game_schema():
     existing = {
@@ -109,6 +112,18 @@ def write_json_file(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+def record_sync_status(key, label, result=None, status="success"):
+    data = read_json_file(SYNC_STATUS_PATH, {})
+    data[key] = {
+        "key": key,
+        "label": label,
+        "status": status,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "summary": result or {},
+    }
+    write_json_file(SYNC_STATUS_PATH, data)
+    return data[key]
 
 def parse_date(txt):
     m = re.search(r'(\d{1,2})/(\d{1,2})', txt)
@@ -584,6 +599,38 @@ def choose_reward_player(guaranteed_holo=False):
         player["rarity"] = "holo"
     return player
 
+def roll_pack_rarity(pack_type):
+    value = random.random()
+    if pack_type == "premium":
+        if value < 0.07:
+            return "legend"
+        if value < 0.25:
+            return "holo"
+        if value < 0.62:
+            return "rare"
+        return "common"
+    if value < 0.03:
+        return "legend"
+    if value < 0.12:
+        return "holo"
+    if value < 0.34:
+        return "rare"
+    return "common"
+
+def choose_pack_player(pack_type="standard"):
+    players = read_json_file(PLAYERS_POOL_PATH, [])
+    if not isinstance(players, list) or not players:
+        return None
+    pool = [
+        player for player in players
+        if isinstance(player, dict) and clean_player_name(player.get("name")) and "二軍" not in str(player.get("team") or "")
+    ] or players
+    player = dict(random.choice(pool))
+    player["rarity"] = roll_pack_rarity(pack_type)
+    if clean_player_name(player.get("name")) == "頌恩":
+        player["rarity"] = "legend"
+    return player
+
 # --- 格式化輔助函數：確保數據轉成陣列 ---
 # --- 格式化輔助函數：增加球員參數 ---
 def format_game_detail(game, away_players=None, home_players=None):
@@ -906,7 +953,9 @@ def update_schedule():
             count += 1
             
         db.session.commit()
-        return jsonify({"status": "success", "year": target_year, "month": target_m, "count": count})
+        result = {"status": "success", "year": target_year, "month": target_m, "count": count}
+        record_sync_status("schedule", "賽程同步", result)
+        return jsonify(result)
     except Exception as e:
         print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -1015,7 +1064,9 @@ def update_today():
                     print(f"❌ DB找不到 {anchor_date} 的 {aw_n} vs {ho_n}")
 
         db.session.commit()
-        return jsonify({"status": "success", "count": count})
+        result = {"status": "success", "count": count}
+        record_sync_status("today", "今日狀態", result)
+        return jsonify(result)
     finally:
         if driver: driver.quit()
 
@@ -1150,6 +1201,36 @@ def claim_daily_reward():
         "user": user_to_dict(user),
         "streak": streak,
         "guaranteed_bonus": guaranteed_holo,
+    })
+
+@app.route('/api/shop/packs', methods=['POST'])
+def buy_point_pack():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    pack_type = str(data.get("pack_type") or data.get("type") or "standard")
+    if pack_type not in PACK_COSTS:
+        return jsonify({"error": "未知的球員包"}), 400
+
+    cost = PACK_COSTS[pack_type]
+    if intish(user.card_points) < cost:
+        return jsonify({"error": f"收藏點數不足，需要 {cost} 點"}), 400
+
+    player = choose_pack_player(pack_type)
+    if not player:
+        return jsonify({"error": "球員池沒有資料，請先同步球員資料"}), 400
+
+    user.card_points = intish(user.card_points) - cost
+    card = upsert_user_card(user, normalize_card_payload({ **player, "count": 1 }))
+    db.session.commit()
+    return jsonify({
+        "status": "success",
+        "pack_type": pack_type,
+        "cost": cost,
+        "card": card_to_dict(card),
+        "user": user_to_dict(user),
     })
 
 @app.route('/api/cards', methods=['GET'])
@@ -1355,14 +1436,16 @@ def update_game_extras():
             })
 
     db.session.commit()
-    return jsonify({
+    result = {
         "status": "success" if not failed else "partial",
         "year": target_year,
         "month": target_m,
         "updated": updated,
         "skipped": skipped,
         "failed": failed,
-    })
+    }
+    record_sync_status("game_extras", "投手與 MVP", result, result["status"])
+    return jsonify(result)
 
 @app.route('/api/games')
 def get_games():
@@ -1534,7 +1617,9 @@ def update_specific_month():
             print(f"✅ {last_date}: {aw} VS {ho} ({st})")
 
         db.session.commit()
-        return jsonify({"status": "success", "year": target_year, "month": target_m, "count": count})
+        result = {"status": "success", "year": target_year, "month": target_m, "count": count}
+        record_sync_status("month", "月份賽程", result)
+        return jsonify(result)
 
     except Exception as e:
         print(traceback.format_exc())
@@ -1592,8 +1677,9 @@ def update_standings():
             all_data[cat_key] = rows_data
 
         write_json_file(STANDINGS_PATH, all_data)
-
-        return jsonify({"status": "success", "data": all_data})
+        result = {"status": "success", "data": all_data}
+        record_sync_status("standings", "球隊戰績", {"groups": len(all_data)})
+        return jsonify(result)
 
     except Exception as e:
         print(traceback.format_exc())
@@ -1605,6 +1691,10 @@ def update_standings():
 @app.route('/api/get_standings')
 def get_standings_data():
     return jsonify(read_json_file(STANDINGS_PATH, {}))
+
+@app.route('/api/sync/status')
+def get_sync_status():
+    return jsonify(read_json_file(SYNC_STATUS_PATH, {}))
 
 def parse_generic_table(table_node):
     """通用工具：將 HTML 表格轉為 List[Dict]"""
@@ -1745,7 +1835,9 @@ def init_player_pool():
 
             print(f"✅ {name} | {team} | {position}")
 
-        return jsonify({"status": "success", "total": len(master_pool)})
+        result = {"status": "success", "total": len(master_pool)}
+        record_sync_status("players", "球員池", result)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
@@ -1813,4 +1905,4 @@ def health():
 
 if __name__ == '__main__':
     # debug=True 可以在你改代碼時自動重啟，非常方便
-    app.run(debug=True, port=int(os.environ.get("CPBL_PORT", 5100)), use_reloader=False)
+    app.run(debug=True, port=int(os.environ.get("CPBL_PORT", 5101)), use_reloader=False)

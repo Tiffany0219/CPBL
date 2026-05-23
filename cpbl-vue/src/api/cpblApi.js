@@ -64,6 +64,10 @@ export const cpblApi = {
     return postJson('/rewards/daily', {}, token)
   },
 
+  buyPointPack(packType, token) {
+    return postJson('/shop/packs', { pack_type: packType }, token)
+  },
+
   getUserCards(token) {
     return request('/cards', { token })
   },
@@ -150,6 +154,10 @@ export const cpblApi = {
 
   updateStandings() {
     return request('/update/standings')
+  },
+
+  getSyncStatus() {
+    return request('/sync/status')
   },
 
   getPlayerPool() {

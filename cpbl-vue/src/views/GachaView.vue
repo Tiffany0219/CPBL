@@ -65,6 +65,26 @@
           </div>
         </div>
 
+        <div class="point-shop-card">
+          <div class="point-shop-head">
+            <div>
+              <span>POINT SHOP</span>
+              <strong>{{ cardPoints }} 點</strong>
+            </div>
+            <i class="fa-solid fa-coins"></i>
+          </div>
+          <button
+            v-for="pack in pointPacks"
+            :key="pack.key"
+            type="button"
+            :disabled="isDrawing || cardPoints < pack.cost"
+            @click="openPointPack(pack.key)"
+          >
+            <span>{{ pack.label }}</span>
+            <b>{{ pack.cost }} 點</b>
+          </button>
+        </div>
+
         <div v-if="recentDraws.length" class="recent-draws">
           <div class="recent-draws-head">
             <span>最近抽到</span>
@@ -212,6 +232,10 @@ const packModes = [
   { key: 'standard', label: '標準包', text: '穩定收藏', icon: 'fa-solid fa-box' },
   { key: 'premium', label: '高級包', text: '稀有加成', icon: 'fa-solid fa-gem' }
 ]
+const pointPacks = [
+  { key: 'standard', label: '點數標準包', cost: 18 },
+  { key: 'premium', label: '點數高級包', cost: 60 }
+]
 const odds = computed(() => packMode.value === 'premium'
   ? [
       { key: 'common', label: '一般', rate: '45%' },
@@ -247,6 +271,7 @@ const playerInitials = computed(() => getPlayerInitials(player.value))
 const playerImage = computed(() => `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`)
 const isDrawing = computed(() => loading.value || opening.value)
 const isChaseCard = computed(() => ['holo', 'legend'].includes(rarity.value))
+const cardPoints = computed(() => auth?.user?.value?.card_points || 0)
 const packTitle = computed(() => {
   if (opening.value) return '開包中'
   if (player.value) return `${rarityText.value}球員已入手`
@@ -338,6 +363,47 @@ async function drawCard() {
     } else {
       error.value = '請確認 Flask 是否啟動，以及 /api/get_player_pool 是否正常回傳資料。'
     }
+  } finally {
+    loading.value = false
+    opening.value = false
+    openingStep.value = 'idle'
+  }
+}
+
+async function openPointPack(packType) {
+  if (!auth?.token?.value) {
+    error.value = '請先登入或註冊，才能使用收藏點數開包。'
+    return
+  }
+
+  loading.value = true
+  opening.value = true
+  openingStep.value = 'shuffle'
+  error.value = ''
+  player.value = null
+  imageMissing.value = false
+  try {
+    await delay(360)
+    openingStep.value = 'scout'
+    await delay(360)
+    openingStep.value = 'reveal'
+    const result = await cpblApi.buyPointPack(packType, auth.token.value)
+    await delay(360)
+    player.value = result.card
+    if (auth.user) auth.user.value = result.user
+    addPlayerToCollection(result.card)
+    await auth.refreshCards?.()
+    addRecentDraw(result.card)
+    drawKey.value += 1
+    notify({
+      type: ['holo', 'legend'].includes(playerRarity(result.card)) ? 'success' : 'info',
+      title: packType === 'premium' ? '高級包開啟' : '標準包開啟',
+      message: `花費 ${result.cost} 點，獲得 ${cleanPlayerName(result.card)}。`
+    })
+  } catch (err) {
+    error.value = err?.message?.includes('不足')
+      ? '收藏點數不足，可以先分解重複卡取得點數。'
+      : '點數開包失敗，請確認後端 API 是否正常。'
   } finally {
     loading.value = false
     opening.value = false

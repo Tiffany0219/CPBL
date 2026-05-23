@@ -12,10 +12,10 @@ cd cpbl-backend
 python app.py
 ```
 
-預設 API 位址是 `http://127.0.0.1:5100/api`，可用這個端點確認連線：
+預設 API 位址是 `http://127.0.0.1:5101/api`，可用這個端點確認連線：
 
 ```bash
-curl http://127.0.0.1:5100/api/health
+curl http://127.0.0.1:5101/api/health
 ```
 
 ## 啟動前端
@@ -26,12 +26,12 @@ npm install
 npm run dev
 ```
 
-預設前端網址是 `http://127.0.0.1:5180/`。
+預設前端網址是 `http://127.0.0.1:5180/`，如果該 port 被占用，Vite 會提示改用下一個可用 port。
 
-前端預設會連到 `http://127.0.0.1:5100/api`。如需調整，複製 `cpbl-vue/.env.example` 為 `.env` 後修改：
+前端預設會連到 `http://127.0.0.1:5101/api`。如需調整，複製 `cpbl-vue/.env.example` 為 `.env` 後修改：
 
 ```env
-VITE_API_BASE=http://127.0.0.1:5100/api
+VITE_API_BASE=http://127.0.0.1:5101/api
 VITE_CPBL_SEASON_YEAR=2026
 ```
 
@@ -40,7 +40,11 @@ VITE_CPBL_SEASON_YEAR=2026
 如需調整球季年份或 JSON 資料檔位置，可複製 `cpbl-backend/.env.example` 參考設定環境變數：
 
 ```env
-CPBL_PORT=5100
+CPBL_PORT=5101
 CPBL_SEASON_YEAR=2026
 CPBL_DATA_DIR=/Users/tiffany/Projects/CPBL/cpbl-backend
 ```
+
+## 資料檔
+
+`cpbl-backend/instance/*.db`、`standings.json`、`players_pool.json`、`sync_status.json` 與球員圖片快取會由同步或使用者操作產生，預設不提交到 Git。程式碼與畫面功能請以 commit 保存，資料快取需要時再重新同步。

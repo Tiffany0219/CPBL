@@ -8,4 +8,6 @@ __pycache__
 cpbl-backend/instance/*.db
 cpbl-backend/standings.json
 cpbl-backend/players_pool.json
+cpbl-backend/sync_status.json
+cpbl-backend/static/image/players/
 cpbl-vue/dist

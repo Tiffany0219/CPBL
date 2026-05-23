@@ -30,6 +30,14 @@
       </article>
     </section>
 
+    <section class="sync-status-strip">
+      <article v-for="item in syncRows" :key="item.key">
+        <span>{{ item.label }}</span>
+        <strong>{{ item.time }}</strong>
+        <small>{{ item.meta }}</small>
+      </article>
+    </section>
+
     <section class="sync-layout">
       <div class="sync-actions-panel">
         <div class="lineup-panel-head">
@@ -109,6 +117,7 @@ const targetMonth = ref(currentMonth)
 const checking = ref(false)
 const runningKey = ref('')
 const logs = ref([])
+const syncStatus = ref({})
 const health = ref({
   games: { status: 'unknown', value: '-', message: '尚未檢查' },
   standings: { status: 'unknown', value: '-', message: '尚未檢查' },
@@ -124,6 +133,25 @@ const healthItems = computed(() => [
   { key: 'topStats', label: '單項排行', icon: 'fa-solid fa-chart-line', ...health.value.topStats },
   { key: 'players', label: '球員池', icon: 'fa-solid fa-users', ...health.value.players }
 ])
+
+const syncStatusLabels = {
+  today: '今日狀態',
+  schedule: '賽程同步',
+  month: '月份賽程',
+  game_extras: '投手 / MVP',
+  standings: '球隊戰績',
+  players: '球員池'
+}
+
+const syncRows = computed(() => Object.entries(syncStatusLabels).map(([key, label]) => {
+  const item = syncStatus.value[key]
+  return {
+    key,
+    label,
+    time: formatSyncTime(item?.updated_at),
+    meta: item?.status ? `狀態：${item.status}` : '尚未記錄'
+  }
+}))
 
 const actions = computed(() => [
   {
@@ -210,6 +238,26 @@ function normalizeError(err) {
   return err?.message?.slice(0, 120) || '任務執行失敗'
 }
 
+function formatSyncTime(value) {
+  if (!value) return '尚未同步'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-TW', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+async function loadSyncStatus() {
+  try {
+    syncStatus.value = await cpblApi.getSyncStatus()
+  } catch {
+    syncStatus.value = {}
+  }
+}
+
 async function runAction(action) {
   if (action.confirm) {
     const confirmed = await confirmAction({
@@ -228,6 +276,7 @@ async function runAction(action) {
     const result = await action.run()
     addLog('success', action.title, action.summarize(result))
     await checkHealth()
+    await loadSyncStatus()
   } catch (err) {
     console.error(err)
     addLog('error', action.title, normalizeError(err))
@@ -271,5 +320,7 @@ async function checkHealth() {
   checking.value = false
 }
 
-onMounted(checkHealth)
+onMounted(async () => {
+  await Promise.allSettled([checkHealth(), loadSyncStatus()])
+})
 </script>
