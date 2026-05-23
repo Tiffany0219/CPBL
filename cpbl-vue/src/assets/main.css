@@ -3040,7 +3040,7 @@ button:disabled {
 
 .collection-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(130px, 0.48fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -3184,12 +3184,15 @@ button:disabled {
   border-top: 7px solid var(--team-color, #334155);
   border-radius: 18px;
   box-shadow: var(--shadow-sm);
+  cursor: pointer;
   transition: 0.18s ease;
 }
 
-.collection-card-large:hover {
+.collection-card-large:hover,
+.collection-card-large:focus-visible {
   border-color: #cbd5e1;
   border-top-color: var(--team-color, #334155);
+  outline: none;
   box-shadow: var(--shadow-md);
   transform: translateY(-2px);
 }
@@ -3285,6 +3288,18 @@ button:disabled {
   color: var(--team-color, #334155);
   font-size: 13px;
   font-weight: 900;
+}
+
+.collection-card-body small {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1px;
 }
 
 .collection-card-actions {
@@ -5553,14 +5568,88 @@ button:disabled {
 }
 
 .card-detail-modal {
-  max-width: 560px;
+  max-width: 680px;
+  overflow: hidden;
+  border-top: 8px solid var(--team-color, #334155);
+  background:
+    radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--team-color, #334155) 16%, transparent), transparent 34%),
+    linear-gradient(145deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.card-detail-modal.holo {
+  border-color: #14b8a6;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(45, 212, 191, 0.2), transparent 34%),
+    linear-gradient(145deg, #ffffff 0%, #ecfeff 58%, #ffffff 100%);
+}
+
+.card-detail-modal.legend {
+  border-color: #f59e0b;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(251, 191, 36, 0.24), transparent 34%),
+    linear-gradient(145deg, #ffffff 0%, #fffbeb 55%, #ffffff 100%);
 }
 
 .card-detail-head {
   display: grid;
-  grid-template-columns: 150px 1fr;
-  gap: 18px;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 22px;
   align-items: center;
+}
+
+.card-detail-avatar {
+  width: 180px;
+  height: 220px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #d7e5f2;
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--team-color, #334155) 14%, #ffffff), #ffffff 74%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.78),
+    0 18px 42px rgba(15, 31, 51, 0.13);
+}
+
+.card-detail-avatar img,
+.card-detail-avatar span {
+  width: 142px;
+  height: 142px;
+  display: grid;
+  place-items: center;
+  border: 3px solid #ffffff;
+  border-radius: 24px;
+  background: #ffffff;
+  color: var(--team-color, #334155);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--team-color, #334155) 34%, #cbd5e1);
+}
+
+.card-detail-avatar img {
+  object-fit: cover;
+}
+
+.card-detail-avatar span {
+  font-size: 36px;
+  font-weight: 900;
+}
+
+.card-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.card-detail-tags b {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #0b1f33;
+  color: #7dd3fc;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 1px;
 }
 
 .card-detail-head h2 {
@@ -5575,6 +5664,58 @@ button:disabled {
   color: #64748b;
   font-weight: 800;
   line-height: 1.65;
+}
+
+.card-detail-desc {
+  margin: 22px 0 0;
+  padding: 16px;
+  border: 1px solid #d7e5f2;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.card-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.card-detail-grid div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d7e5f2;
+  border-radius: 15px;
+  background: #ffffff;
+}
+
+.card-detail-grid span,
+.card-detail-grid strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-detail-grid span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+.card-detail-grid strong {
+  margin-top: 5px;
+  color: #0b1f33;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.card-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .ticket-delete-btn {
@@ -6039,8 +6180,14 @@ button:disabled {
   .collection-stats {
     grid-template-columns: 1fr 1fr;
   }
+  .collection-tools {
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 0.5fr);
+  }
   .collection-page-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .card-detail-grid {
+    grid-template-columns: 1fr 1fr;
   }
   .standings-team-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6244,6 +6391,20 @@ button:disabled {
   }
   .collection-tools {
     grid-template-columns: 1fr;
+  }
+  .card-detail-head {
+    grid-template-columns: 1fr;
+  }
+  .card-detail-avatar {
+    width: 100%;
+    height: 210px;
+  }
+  .card-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .card-detail-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
   .collection-player-card {
     grid-template-columns: 48px minmax(0, 1fr);

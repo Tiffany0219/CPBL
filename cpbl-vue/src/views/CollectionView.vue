@@ -61,6 +61,20 @@
           <option value="">全部球隊</option>
           <option v-for="team in teams" :key="team" :value="team">{{ team }}</option>
         </select>
+
+        <select v-model="rarityFilter" class="collection-filter">
+          <option value="">全部稀有度</option>
+          <option v-for="option in rarityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+
+        <select v-model="positionFilter" class="collection-filter">
+          <option value="">全部位置</option>
+          <option v-for="position in positionOptions" :key="position" :value="position">{{ position }}</option>
+        </select>
+
+        <select v-model="sortMode" class="collection-filter">
+          <option v-for="option in sortOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
       </div>
 
       <StateBox
@@ -82,6 +96,8 @@
           :class="['collection-card-large', player.rarity || 'common']"
           :style="{ '--team-color': teamColor(player.team) }"
           @click="selectedPlayer = player"
+          @keydown.enter="selectedPlayer = player"
+          tabindex="0"
         >
           <div class="collection-card-top">
             <span>{{ player.team || '未知球隊' }}</span>
@@ -101,6 +117,7 @@
           <div class="collection-card-body">
             <h3>{{ cleanName(player) }}</h3>
             <p>{{ player.position || '未知位置' }}</p>
+            <small>{{ cardSerial(player) }}</small>
           </div>
 
           <div class="collection-card-actions">
@@ -118,12 +135,15 @@
       </div>
     </section>
 
-    <div v-if="selectedPlayer" class="modal" style="display:block;">
-      <div class="modal-content card-detail-modal">
+    <div v-if="selectedPlayer" class="modal">
+      <div
+        :class="['modal-content', 'card-detail-modal', selectedPlayer.rarity || 'common']"
+        :style="{ '--team-color': teamColor(selectedPlayer.team) }"
+      >
         <button class="modal-close" type="button" @click="selectedPlayer = null">&times;</button>
-        <p class="eyebrow">PLAYER CARD</p>
+        <p class="eyebrow">PLAYER CARD DETAIL</p>
         <div class="card-detail-head">
-          <div class="collection-card-avatar">
+          <div class="card-detail-avatar">
             <img
               v-if="!failedImages[cleanName(selectedPlayer)]"
               :src="playerImage(selectedPlayer)"
@@ -133,15 +153,44 @@
             <span v-else>{{ initials(selectedPlayer) }}</span>
           </div>
           <div>
-            <span :class="['rarity-pill', selectedPlayer.rarity || 'common']">{{ rarityLabel(selectedPlayer.rarity) }}</span>
+            <div class="card-detail-tags">
+              <span :class="['rarity-pill', selectedPlayer.rarity || 'common']">{{ rarityLabel(selectedPlayer.rarity) }}</span>
+              <b>{{ cardSerial(selectedPlayer) }}</b>
+            </div>
             <h2>{{ cleanName(selectedPlayer) }}</h2>
             <p>{{ selectedPlayer.team || '未知球隊' }} · {{ selectedPlayer.position || '未知位置' }}</p>
           </div>
         </div>
         <p class="card-detail-desc">{{ selectedPlayer.description || '這位球員已加入你的收藏冊，之後可以排進我的打線。' }}</p>
-        <div class="profile-list-row">
-          <span>持有張數</span>
-          <strong>x{{ selectedPlayer.count || 1 }}</strong>
+
+        <div class="card-detail-grid">
+          <div>
+            <span>持有張數</span>
+            <strong>x{{ selectedPlayer.count || 1 }}</strong>
+          </div>
+          <div>
+            <span>球隊</span>
+            <strong>{{ selectedPlayer.team || '未知' }}</strong>
+          </div>
+          <div>
+            <span>守位</span>
+            <strong>{{ selectedPlayer.position || '未知' }}</strong>
+          </div>
+          <div>
+            <span>稀有度</span>
+            <strong>{{ rarityLabel(selectedPlayer.rarity) }}</strong>
+          </div>
+        </div>
+
+        <div class="card-detail-actions">
+          <button class="btn-soft" type="button" @click="copyPlayerName(selectedPlayer)">
+            <i class="fa-solid fa-copy"></i>
+            複製姓名
+          </button>
+          <button class="btn-primary" type="button" @click="selectedPlayer = null">
+            <i class="fa-solid fa-check"></i>
+            收進卡冊
+          </button>
         </div>
       </div>
     </div>
@@ -170,9 +219,25 @@ const auth = inject('auth', null)
 const collection = ref([])
 const keyword = ref('')
 const teamFilter = ref('')
+const rarityFilter = ref('')
+const positionFilter = ref('')
+const sortMode = ref('rarity')
 const failedImages = ref({})
 const selectedPlayer = ref(null)
 const teams = TEAMS
+const rarityRank = { legend: 4, holo: 3, rare: 2, common: 1 }
+const rarityOptions = [
+  { value: 'legend', label: '傳說' },
+  { value: 'holo', label: '閃卡' },
+  { value: 'rare', label: '稀有' },
+  { value: 'common', label: '一般' }
+]
+const sortOptions = [
+  { value: 'rarity', label: '稀有度排序' },
+  { value: 'count', label: '持有張數排序' },
+  { value: 'team', label: '球隊排序' },
+  { value: 'name', label: '姓名排序' }
+]
 
 const filteredCollection = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -181,13 +246,17 @@ const filteredCollection = computed(() => {
     const content = `${cleanName(player)} ${player.team || ''} ${player.position || ''}`.toLowerCase()
     const matchesText = !text || content.includes(text)
     const matchesTeam = !teamFilter.value || player.team === teamFilter.value
+    const matchesRarity = !rarityFilter.value || (player.rarity || 'common') === rarityFilter.value
+    const matchesPosition = !positionFilter.value || player.position === positionFilter.value
 
-    return matchesText && matchesTeam
-  })
+    return matchesText && matchesTeam && matchesRarity && matchesPosition
+  }).sort(sortPlayers)
 })
 
 const totalCards = computed(() => collection.value.reduce((sum, player) => sum + Number(player.count || 1), 0))
 const ownedTeams = computed(() => new Set(collection.value.map(player => player.team).filter(Boolean)).size)
+const positionOptions = computed(() => [...new Set(collection.value.map(player => player.position).filter(Boolean))]
+  .sort((a, b) => a.localeCompare(b, 'zh-Hant')))
 const topTeam = computed(() => {
   const counts = {}
   collection.value.forEach(player => {
@@ -209,6 +278,27 @@ function initials(player) {
 
 function playerImage(player) {
   return `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName(player))}.png`
+}
+
+function cardSerial(player) {
+  const base = Array.from(cleanName(player)).reduce((sum, char) => sum + char.charCodeAt(0), 0)
+  return `CPBL-${String(base % 9999).padStart(4, '0')}`
+}
+
+function sortPlayers(a, b) {
+  if (sortMode.value === 'count') {
+    return Number(b.count || 1) - Number(a.count || 1) || cleanName(a).localeCompare(cleanName(b), 'zh-Hant')
+  }
+  if (sortMode.value === 'team') {
+    return (a.team || '').localeCompare(b.team || '', 'zh-Hant') || cleanName(a).localeCompare(cleanName(b), 'zh-Hant')
+  }
+  if (sortMode.value === 'name') {
+    return cleanName(a).localeCompare(cleanName(b), 'zh-Hant')
+  }
+
+  return (rarityRank[b.rarity || 'common'] || 0) - (rarityRank[a.rarity || 'common'] || 0)
+    || Number(b.count || 1) - Number(a.count || 1)
+    || cleanName(a).localeCompare(cleanName(b), 'zh-Hant')
 }
 
 function markImageFailed(player) {
