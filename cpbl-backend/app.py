@@ -30,6 +30,7 @@ SEASON_YEAR = int(os.environ.get("CPBL_SEASON_YEAR", datetime.now().year))
 STANDINGS_PATH = DATA_DIR / "standings.json"
 PLAYERS_POOL_PATH = DATA_DIR / "players_pool.json"
 SYNC_STATUS_PATH = DATA_DIR / "sync_status.json"
+SEED_GAMES_PATH = BASE_DIR / "seed_games.json"
 DEFAULT_DATABASE_PATH = BASE_DIR / "instance" / "cpbl_data.db"
 DEFAULT_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -88,11 +89,35 @@ def ensure_columns(table, columns):
             db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
     db.session.commit()
 
+def seed_games_if_empty():
+    if Game.query.count() > 0 or not SEED_GAMES_PATH.exists():
+        return
+
+    with open(SEED_GAMES_PATH, "r", encoding="utf-8") as f:
+        games = json.load(f)
+
+    if not isinstance(games, list):
+        return
+
+    allowed_columns = {
+        "game_date", "game_sno", "game_time", "away_team", "away_score", "away_pitcher",
+        "home_team", "home_score", "home_pitcher", "winning_pitcher", "losing_pitcher",
+        "save_pitcher", "mvp", "mvp_team", "mvp_note", "location", "game_status",
+        "away_line", "home_line", "away_rhe", "home_rhe"
+    }
+
+    for item in games:
+        if isinstance(item, dict):
+            db.session.add(Game(**{key: item.get(key, "") for key in allowed_columns}))
+
+    db.session.commit()
+
 with app.app_context():
     db.create_all()
     ensure_game_schema()
     ensure_columns("user", USER_EXTRA_COLUMNS)
     ensure_columns("user_card", USER_CARD_EXTRA_COLUMNS)
+    seed_games_if_empty()
 
 def make_driver():
     opts = Options()
