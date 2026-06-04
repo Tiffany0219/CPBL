@@ -14,13 +14,31 @@ services:
         value: "0"
 
   - type: web
+    name: gobase-api-docker
+    runtime: docker
+    plan: free
+    dockerfilePath: cpbl-backend/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: CPBL_SEASON_YEAR
+        value: "2026"
+      - key: CPBL_DATA_DIR
+        value: /app
+      - key: FLASK_DEBUG
+        value: "0"
+      - key: CHROME_BIN
+        value: /usr/bin/chromium
+      - key: CHROMEDRIVER_PATH
+        value: /usr/bin/chromedriver
+
+  - type: web
     name: gobase-web
     runtime: static
     buildCommand: cd cpbl-vue && npm ci && npm run build
     staticPublishPath: cpbl-vue/dist
     envVars:
       - key: VITE_API_BASE
-        value: https://gobase-api.onrender.com/api
+        value: https://gobase-api-docker.onrender.com/api
       - key: VITE_CPBL_SEASON_YEAR
         value: "2026"
     routes:

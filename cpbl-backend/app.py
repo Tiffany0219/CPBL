@@ -10,6 +10,7 @@ import requests
 from werkzeug.security import check_password_hash, generate_password_hash
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -121,12 +122,22 @@ with app.app_context():
 
 def make_driver():
     opts = Options()
-    opts.add_argument('--headless')
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin:
+        opts.binary_location = chrome_bin
+
+    opts.add_argument('--headless=new')
     opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-gpu')
+    opts.add_argument('--disable-dev-shm-usage')
+    opts.add_argument('--disable-extensions')
+    opts.add_argument('--remote-debugging-port=9222')
     opts.add_argument('--window-size=1920,1080')
     opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-    return webdriver.Chrome(options=opts)
+
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
+    service = Service(chromedriver_path) if chromedriver_path else None
+    return webdriver.Chrome(service=service, options=opts)
 
 def cpbl_box_url(game_sno, year=None):
     target_year = year or SEASON_YEAR
@@ -1933,6 +1944,29 @@ def health():
         "standings_ready": STANDINGS_PATH.exists(),
         "players_ready": PLAYERS_POOL_PATH.exists(),
     })
+
+@app.route('/api/selenium/health')
+def selenium_health():
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get("data:text/html,<title>selenium-ok</title><h1>ok</h1>")
+        return jsonify({
+            "status": "ok",
+            "title": driver.title,
+            "chrome_bin": os.environ.get("CHROME_BIN", ""),
+            "chromedriver_path": os.environ.get("CHROMEDRIVER_PATH", ""),
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "chrome_bin": os.environ.get("CHROME_BIN", ""),
+            "chromedriver_path": os.environ.get("CHROMEDRIVER_PATH", ""),
+        }), 500
+    finally:
+        if driver:
+            driver.quit()
 
 if __name__ == '__main__':
     # debug=True 可以在你改代碼時自動重啟，非常方便

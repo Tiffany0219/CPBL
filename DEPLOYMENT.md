@@ -9,18 +9,21 @@
 
 ## Backend Environment
 
-Render web service:
+Render uses a Docker backend service so Selenium can run Chromium in the cloud.
 
-- Root directory: repo root
-- Build command: `pip install -r cpbl-backend/requirements.txt`
-- Start command: `cd cpbl-backend && gunicorn app:app --bind 0.0.0.0:$PORT`
+- Runtime: Docker
+- Service name: `gobase-api-docker`
+- Dockerfile path: `cpbl-backend/Dockerfile`
+- Docker context: `.`
 
 Environment variables:
 
 ```env
 CPBL_SEASON_YEAR=2026
-CPBL_DATA_DIR=/opt/render/project/src/cpbl-backend
+CPBL_DATA_DIR=/app
 FLASK_DEBUG=0
+CHROME_BIN=/usr/bin/chromium
+CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ```
 
 Optional production database:
@@ -34,7 +37,7 @@ DATABASE_URL=postgresql://...
 Vite needs the API URL at build time:
 
 ```env
-VITE_API_BASE=https://YOUR_BACKEND_URL/api
+VITE_API_BASE=https://gobase-api-docker.onrender.com/api
 VITE_CPBL_SEASON_YEAR=2026
 ```
 
@@ -70,5 +73,10 @@ https://YOUR_BACKEND_URL/static/image/...
 
 ```txt
 https://YOUR_BACKEND_URL/api/health
+https://YOUR_BACKEND_URL/api/selenium/health
 https://YOUR_FRONTEND_URL
 ```
+
+`/api/selenium/health` should return `{"status":"ok","title":"selenium-ok"}` when Chromium is available in the deployed container.
+
+Render cannot change an existing service from the Python runtime to Docker after it is created, so this project keeps the original `gobase-api` service and adds `gobase-api-docker`. After the Docker API is healthy, the old `gobase-api` service can be removed from the Render dashboard.
