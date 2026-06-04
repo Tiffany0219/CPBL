@@ -47,4 +47,15 @@ CPBL_DATA_DIR=/Users/tiffany/Projects/CPBL/cpbl-backend
 
 ## 資料檔
 
-`cpbl-backend/instance/*.db`、`standings.json`、`players_pool.json`、`sync_status.json` 與球員圖片快取會由同步或使用者操作產生，預設不提交到 Git。程式碼與畫面功能請以 commit 保存，資料快取需要時再重新同步。
+`cpbl-backend/instance/*.db` 會保存本機帳號與收藏資料，預設不提交到 Git。
+
+Demo 部署需要的 `standings.json`、`players_pool.json`、`sync_status.json` 與 `static/image/players` 會提交到 Git，確保網站第一次上線就有賽程、球員池與圖片可以顯示。
+
+## 部署
+
+部署設定請看 [DEPLOYMENT.md](./DEPLOYMENT.md)。重點是後端先部署並取得公開網址，再把前端環境變數設成：
+
+```env
+VITE_API_BASE=https://YOUR_BACKEND_URL/api
+VITE_CPBL_SEASON_YEAR=2026
+```

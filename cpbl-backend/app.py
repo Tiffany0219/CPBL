@@ -30,11 +30,17 @@ SEASON_YEAR = int(os.environ.get("CPBL_SEASON_YEAR", datetime.now().year))
 STANDINGS_PATH = DATA_DIR / "standings.json"
 PLAYERS_POOL_PATH = DATA_DIR / "players_pool.json"
 SYNC_STATUS_PATH = DATA_DIR / "sync_status.json"
+DEFAULT_DATABASE_PATH = BASE_DIR / "instance" / "cpbl_data.db"
+DEFAULT_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 CORS(app)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{BASE_DIR / 'instance' / 'cpbl_data.db'}"
+database_url = os.environ.get("DATABASE_URL") or f"sqlite:///{DEFAULT_DATABASE_PATH}"
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
@@ -1896,7 +1902,7 @@ def health():
     return jsonify({
         "status": "ok",
         "season_year": SEASON_YEAR,
-        "database": str(BASE_DIR / 'instance' / 'cpbl_data.db'),
+        "database": app.config['SQLALCHEMY_DATABASE_URI'].split("@")[-1],
         "data_dir": str(DATA_DIR),
         "games": game_count,
         "standings_ready": STANDINGS_PATH.exists(),
@@ -1905,4 +1911,9 @@ def health():
 
 if __name__ == '__main__':
     # debug=True 可以在你改代碼時自動重啟，非常方便
-    app.run(debug=True, port=int(os.environ.get("CPBL_PORT", 5101)), use_reloader=False)
+    app.run(
+        debug=os.environ.get("FLASK_DEBUG", "1") == "1",
+        host=os.environ.get("CPBL_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT") or os.environ.get("CPBL_PORT", 5101)),
+        use_reloader=False
+    )
