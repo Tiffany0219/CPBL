@@ -28,13 +28,33 @@
         <div>
           <p class="eyebrow">FAVORITE TEAM</p>
           <h3>{{ auth?.user?.value?.favorite_team || '尚未設定最愛球隊' }}</h3>
-          <p>設定後首頁會更容易看到你在意的球隊資訊。</p>
         </div>
 
-        <select v-model="favoriteTeam" class="collection-filter" @change="saveFavoriteTeam">
-          <option value="">尚未設定</option>
-          <option v-for="team in teams" :key="team" :value="team">{{ team }}</option>
-        </select>
+        <div class="favorite-team-picker" role="group" aria-label="選擇最愛球隊">
+          <button
+            type="button"
+            :class="{ active: favoriteTeam === '' }"
+            @click="selectFavoriteTeam('')"
+          >
+            <span class="favorite-team-icon">
+              <i class="fa-solid fa-border-all"></i>
+            </span>
+            <strong>全部球隊</strong>
+          </button>
+
+          <button
+            v-for="team in teams"
+            :key="team"
+            type="button"
+            :class="{ active: favoriteTeam === team }"
+            @click="selectFavoriteTeam(team)"
+          >
+            <span class="favorite-team-icon">
+              <img :src="teamLogo(team)" :alt="team">
+            </span>
+            <strong>{{ team }}</strong>
+          </button>
+        </div>
       </section>
 
       <section class="collection-stats profile-stats">
@@ -137,12 +157,14 @@
 
 <script setup>
 import { inject, onMounted, ref } from 'vue'
-import { cpblApi } from '../api/cpblApi'
+import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import { TEAMS, rarityLabel } from '../composables/usePlayerCollection'
+import { TEAM_LOGOS } from '../utils'
 
 const notify = inject('notify', () => {})
 const auth = inject('auth', null)
+const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 const teams = TEAMS
 const profile = ref(null)
 const favoriteTeam = ref('')
@@ -179,6 +201,16 @@ async function saveFavoriteTeam() {
   } catch {
     notify({ type: 'error', title: '更新失敗', message: '最愛球隊暫時沒有儲存成功。' })
   }
+}
+
+function teamLogo(team) {
+  return `${ASSET_BASE}${TEAM_LOGOS[team] || '/static/image/teams/default.png'}`
+}
+
+function selectFavoriteTeam(team) {
+  if (favoriteTeam.value === team) return
+  favoriteTeam.value = team
+  saveFavoriteTeam()
 }
 
 async function claimDaily() {

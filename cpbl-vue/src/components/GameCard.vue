@@ -248,9 +248,24 @@ function cleanName(value) {
   return value && value !== '-' && value !== '--' ? value : ''
 }
 
+const isPastDatedGame = computed(() => {
+  const value = cleanName(props.game.date)
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})$/)
+  if (!match) return false
+
+  const now = new Date()
+  const gameDate = new Date(now.getFullYear(), Number(match[1]) - 1, Number(match[2]), 23, 59, 59)
+  return gameDate < now
+})
+
+const hasVisibleScore = computed(() => (
+  cleanName(props.game.away_score) || cleanName(props.game.home_score)
+))
+
 function normalizeName(value) {
   if (cleanName(value)) return value
-  return props.game.status === 'FINISH' ? '待同步' : '待公布'
+  if (props.game.status === 'FINISH' || isPastDatedGame.value || hasVisibleScore.value) return '資料更新中'
+  return '待公布'
 }
 
 function pitcherMeta(team, pitcher) {
@@ -270,7 +285,7 @@ const awayPitcherMeta = computed(() => pitcherMeta(props.game.away, props.game.a
 const homePitcherMeta = computed(() => pitcherMeta(props.game.home, props.game.home_pitcher))
 const mvpText = computed(() => {
   if (cleanName(props.game.mvp || props.game.mvp_name)) return props.game.mvp || props.game.mvp_name
-  if (props.game.status === 'FINISH') return '待同步'
+  if (props.game.status === 'FINISH' || isPastDatedGame.value || hasVisibleScore.value) return '資料更新中'
   if (props.game.status === 'LIVE') return '比賽中'
   return '待公布'
 })
@@ -280,7 +295,7 @@ const mvpMeta = computed(() => {
     if (props.game.mvp_team) return `${props.game.mvp_team} · 官方 MVP`
     return '官方 MVP'
   }
-  if (props.game.status === 'FINISH') return '同步中心可補抓'
+  if (props.game.status === 'FINISH' || isPastDatedGame.value || hasVisibleScore.value) return '正在補抓完整資料'
   if (props.game.status === 'LIVE') return '賽後更新'
   return '賽後公布'
 })

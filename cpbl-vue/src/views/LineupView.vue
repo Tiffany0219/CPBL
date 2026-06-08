@@ -33,17 +33,22 @@
 
       <article class="lineup-summary-card">
         <span>已排棒次</span>
-        <strong>{{ filledCount }}/9</strong>
+        <strong>{{ batterFilledCount }}/9</strong>
       </article>
 
       <article class="lineup-summary-card">
-        <span>目前棒次</span>
-        <strong>第 {{ activeSlot.order }} 棒</strong>
+        <span>投手</span>
+        <strong>{{ pitcherSlot.player ? cleanName(pitcherSlot.player) : '未排' }}</strong>
       </article>
 
       <article class="lineup-summary-card">
         <span>同步狀態</span>
         <strong>{{ lineupStatus }}</strong>
+      </article>
+
+      <article class="lineup-summary-card lineup-score-card">
+        <span>打線評分</span>
+        <strong>{{ lineupScore }}</strong>
       </article>
     </section>
 
@@ -54,12 +59,45 @@
             <p class="eyebrow">STARTING NINE</p>
             <h3>先發打線</h3>
           </div>
-          <span>{{ filledCount === 9 ? '完整打線' : `尚缺 ${9 - filledCount} 人` }}</span>
+          <span>{{ lineupComplete ? '完整名單' : `打者尚缺 ${9 - batterFilledCount} 人` }}</span>
         </div>
+
+        <div class="lineup-bonus-strip">
+          <div>
+            <strong>{{ lineupGrade }}</strong>
+            <span>{{ lineupScoreHint }}</span>
+          </div>
+          <small>{{ teamStackLabel }}</small>
+        </div>
+
+        <article
+          :class="['lineup-slot pitcher-lineup-slot', { active: activeSlotIndex === pitcherSlotIndex, filled: pitcherSlot.player }]"
+          @click="activeSlotIndex = pitcherSlotIndex"
+        >
+          <div class="lineup-order pitcher">P</div>
+
+          <PlayerAvatar v-if="pitcherSlot.player" :player="pitcherSlot.player" />
+          <div v-else class="lineup-avatar empty">
+            <i class="fa-solid fa-baseball"></i>
+          </div>
+
+          <div class="lineup-slot-main">
+            <strong>{{ pitcherSlot.player ? cleanName(pitcherSlot.player) : '尚未選擇先發投手' }}</strong>
+            <small>{{ pitcherSlot.player?.team || '從右側收藏冊加入投手卡' }}</small>
+          </div>
+
+          <span class="lineup-position pitcher-label">投手</span>
+
+          <div class="lineup-slot-actions" @click.stop>
+            <button class="lineup-icon-btn danger" type="button" :disabled="!pitcherSlot.player" title="移除" @click="removeFromSlot(pitcherSlotIndex)">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        </article>
 
         <div class="lineup-slots">
           <article
-            v-for="(slot, index) in lineup"
+            v-for="(slot, index) in battingLineup"
             :key="slot.order"
             :class="['lineup-slot', { active: activeSlotIndex === index, filled: slot.player }]"
             @click="activeSlotIndex = index"
@@ -88,7 +126,7 @@
                 <i class="fa-solid fa-chevron-up"></i>
               </button>
 
-              <button class="lineup-icon-btn" type="button" :disabled="index === lineup.length - 1" title="下移" @click="swapSlots(index, index + 1)">
+              <button class="lineup-icon-btn" type="button" :disabled="index === battingLineup.length - 1" title="下移" @click="swapSlots(index, index + 1)">
                 <i class="fa-solid fa-chevron-down"></i>
               </button>
 
@@ -189,7 +227,9 @@ const confirmAction = inject('confirmAction', async () => false)
 
 const positions = ['投手', '捕手', '一壘', '二壘', '三壘', '游擊', '左外野', '中外野', '右外野', '指定打擊']
 const defaultPositions = ['中外野', '二壘', '游擊', '一壘', '三壘', '左外野', '右外野', '捕手', '指定打擊']
+const pitcherSlotIndex = 9
 const teams = TEAMS
+const rarityScore = { common: 4, rare: 8, holo: 14, legend: 24 }
 
 const collection = ref([])
 const lineup = ref(createEmptyLineup())
@@ -203,6 +243,47 @@ const shareImage = ref('')
 
 const activeSlot = computed(() => lineup.value[activeSlotIndex.value] || lineup.value[0])
 const filledCount = computed(() => lineup.value.filter(slot => slot.player).length)
+const battingLineup = computed(() => lineup.value.slice(0, 9))
+const pitcherSlot = computed(() => lineup.value[pitcherSlotIndex] || createPitcherSlot())
+const batterFilledCount = computed(() => battingLineup.value.filter(slot => slot.player).length)
+const lineupComplete = computed(() => batterFilledCount.value === 9 && Boolean(pitcherSlot.value.player))
+const lineupPlayers = computed(() => lineup.value.map(slot => slot.player).filter(Boolean))
+const lineupTeamCounts = computed(() => {
+  const counts = {}
+  lineupPlayers.value.forEach(player => {
+    const team = player.team || '未知球隊'
+    counts[team] = (counts[team] || 0) + 1
+  })
+  return counts
+})
+const topLineupTeam = computed(() => Object.entries(lineupTeamCounts.value).sort((a, b) => b[1] - a[1])[0] || ['', 0])
+const completedDefenseCount = computed(() => new Set(battingLineup.value.map(slot => slot.defense).filter(Boolean)).size)
+const lineupScore = computed(() => {
+  const rarityPoints = lineupPlayers.value.reduce((sum, player) => sum + (rarityScore[player.rarity || 'common'] || 4), 0)
+  const batterBonus = batterFilledCount.value * 4
+  const pitcherBonus = pitcherSlot.value.player ? 12 : 0
+  const defenseBonus = Math.min(completedDefenseCount.value, 9) * 2
+  const teamBonus = Math.max(0, Number(topLineupTeam.value[1] || 0) - 2) * 5
+  return rarityPoints + batterBonus + pitcherBonus + defenseBonus + teamBonus
+})
+const lineupGrade = computed(() => {
+  if (lineupScore.value >= 210) return 'S 級陣容'
+  if (lineupScore.value >= 165) return 'A 級陣容'
+  if (lineupScore.value >= 120) return 'B 級陣容'
+  if (lineupScore.value >= 70) return '成長中'
+  return '等待補強'
+})
+const teamStackLabel = computed(() => {
+  const [team, count] = topLineupTeam.value
+  if (!team || count < 3) return '同隊加成尚未啟動'
+  return `${team} 隊魂加成 +${(count - 2) * 5}`
+})
+const lineupScoreHint = computed(() => {
+  if (!pitcherSlot.value.player) return '補上先發投手可以再加分'
+  if (batterFilledCount.value < 9) return `再補 ${9 - batterFilledCount.value} 位打者可提升完整度`
+  if (Number(topLineupTeam.value[1] || 0) < 3) return '排入 3 位同隊球員可啟動隊魂加成'
+  return '稀有度、守位完整度與隊魂加成已計入'
+})
 const lineupStatus = computed(() => {
   if (!auth?.token?.value) return '本機'
   if (lineupSaving.value) return '同步中'
@@ -251,11 +332,22 @@ const PlayerAvatar = defineComponent({
 })
 
 function createEmptyLineup() {
-  return Array.from({ length: 9 }, (_, index) => ({
+  const batters = Array.from({ length: 9 }, (_, index) => ({
     order: index + 1,
+    role: 'batter',
     defense: defaultPositions[index],
     player: null
   }))
+  return [...batters, createPitcherSlot()]
+}
+
+function createPitcherSlot() {
+  return {
+    order: 'P',
+    role: 'pitcher',
+    defense: '投手',
+    player: null
+  }
 }
 
 function cleanName(playerOrName = '') {
@@ -329,10 +421,12 @@ function applySavedLineup(saved) {
   const empty = createEmptyLineup()
   lineup.value = empty.map((slot, index) => {
     const savedSlot = saved[index] || {}
+    const isPitcherSlot = index === pitcherSlotIndex
 
     return {
       order: slot.order,
-      defense: savedSlot.defense || slot.defense,
+      role: isPitcherSlot ? 'pitcher' : 'batter',
+      defense: isPitcherSlot ? '投手' : savedSlot.defense || slot.defense,
       player: savedSlot.player ? normalizePlayer(savedSlot.player) : null
     }
   })
@@ -371,9 +465,20 @@ function addToLineup(player) {
     return
   }
 
-  const emptyIndex = lineup.value.findIndex(slot => !slot.player)
+  const playerPosition = String(normalized.position || '')
+  const shouldUsePitcherSlot = activeSlotIndex.value === pitcherSlotIndex ||
+    (playerPosition.includes('投手') && !pitcherSlot.value.player)
+  if (shouldUsePitcherSlot) {
+    lineup.value[pitcherSlotIndex].player = normalized
+    activeSlotIndex.value = pitcherSlotIndex
+    saveLineup()
+    return
+  }
+
+  const emptyIndex = battingLineup.value.findIndex(slot => !slot.player)
   const activeSlotIsEmpty = !lineup.value[activeSlotIndex.value]?.player
-  const targetIndex = activeSlotIsEmpty ? activeSlotIndex.value : emptyIndex !== -1 ? emptyIndex : activeSlotIndex.value
+  const activeIsBatterSlot = activeSlotIndex.value >= 0 && activeSlotIndex.value < pitcherSlotIndex
+  const targetIndex = activeIsBatterSlot && activeSlotIsEmpty ? activeSlotIndex.value : emptyIndex !== -1 ? emptyIndex : 0
 
   lineup.value[targetIndex].player = normalized
   saveLineup()
@@ -388,7 +493,7 @@ function removeFromSlot(index) {
 }
 
 function swapSlots(index, targetIndex) {
-  if (targetIndex < 0 || targetIndex >= lineup.value.length) return
+  if (targetIndex < 0 || targetIndex >= pitcherSlotIndex) return
 
   const current = {
     defense: lineup.value[index].defense,
@@ -410,7 +515,7 @@ function swapSlots(index, targetIndex) {
 async function clearLineup() {
   const confirmed = await confirmAction({
     title: '清空打線',
-    message: '確定要清空目前九人打線嗎？登入狀態下也會同步清空。',
+    message: '確定要清空目前先發名單嗎？登入狀態下也會同步清空。',
     confirmText: '清空',
     danger: true
   })
@@ -450,10 +555,11 @@ function generateShareImage() {
   ctx.fillText('我的先發打線', 72, 170)
   ctx.fillStyle = '#cbd5e1'
   ctx.font = '800 28px sans-serif'
-  ctx.fillText(`${filledCount.value}/9 位球員 · ${lineupStatus.value}`, 72, 220)
+  ctx.fillText(`${batterFilledCount.value}/9 棒次 · 投手 ${pitcherSlot.value.player ? '已排' : '未排'} · ${lineupStatus.value}`, 72, 220)
 
-  lineup.value.forEach((slot, index) => {
-    const top = 290 + index * 105
+  const shareSlots = [pitcherSlot.value, ...battingLineup.value]
+  shareSlots.forEach((slot, index) => {
+    const top = 280 + index * 96
     const player = slot.player
     const color = teamColor(player?.team)
     ctx.fillStyle = 'rgba(255,255,255,0.94)'

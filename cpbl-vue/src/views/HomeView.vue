@@ -191,7 +191,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import { SEASON_YEAR, getTodayMMDD, getWeekdayStr } from '../utils'
 
@@ -200,6 +200,7 @@ import GameCard from '../components/GameCard.vue'
 import TicketModal from '../components/TicketModal.vue'
 
 import { useGameMemory } from '../composables/useGameMemory'
+import { applyGameDetailUpdate, hydrateMissingGameDetails } from '../composables/useGameDetailUpdate'
 
 defineEmits(['open-game', 'change-page'])
 
@@ -485,6 +486,7 @@ async function loadGames() {
 
     if (gameResult.status === 'rejected') throw gameResult.reason
     games.value = gameResult.value
+    await hydrateMissingGameDetails(games, cpblApi, { date: homeDate.value, limit: 4 })
     if (statsResult.status === 'fulfilled') {
       topStats.value = Array.isArray(statsResult.value?.data) ? statsResult.value.data : []
     }
@@ -583,8 +585,17 @@ watch(() => auth?.token?.value, () => {
   loadRemoteTickets()
 })
 
+function handleGameDetailUpdated(event) {
+  applyGameDetailUpdate(games, event)
+}
+
 onMounted(() => {
+  window.addEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
   if (auth?.user?.value?.favorite_team) selectedTeam.value = auth.user.value.favorite_team
   loadGames()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
 })
 </script>

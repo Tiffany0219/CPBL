@@ -50,6 +50,8 @@
       @close="closeGameDetail"
     />
 
+    <AiAssistant :active-page="activePage" />
+
     <div v-if="confirmState.visible" class="modal confirm-modal-backdrop">
       <section class="confirm-modal">
         <div class="confirm-modal-icon">
@@ -92,6 +94,7 @@ import { cpblApi } from './api/cpblApi'
 import { saveCollectionMap } from './composables/usePlayerCollection'
 import Sidebar from './components/Sidebar.vue'
 import GameDetailModal from './components/GameDetailModal.vue'
+import AiAssistant from './components/AiAssistant.vue'
 import HomeView from './views/HomeView.vue'
 import NewsView from './views/NewsView.vue'
 import ScheduleView from './views/ScheduleView.vue'
@@ -302,6 +305,12 @@ async function openGameDetail(gameId) {
 
   try {
     selectedGameDetail.value = await cpblApi.getGameDetail(gameId)
+    window.dispatchEvent(new CustomEvent('cpbl-game-detail-updated', {
+      detail: {
+        id: gameId,
+        detail: selectedGameDetail.value
+      }
+    }))
   } catch (err) {
     console.error(err)
     notify({ type: 'error', title: '讀取失敗', message: '無法取得比賽詳細資料，請確認後端是否正常。' })

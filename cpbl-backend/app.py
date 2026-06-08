@@ -4,9 +4,11 @@ import random
 import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
+from dotenv import load_dotenv
 from werkzeug.security import check_password_hash, generate_password_hash
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -26,6 +28,7 @@ from services.cpbl_official import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 DATA_DIR = Path(os.environ.get("CPBL_DATA_DIR", BASE_DIR)).resolve()
 SEASON_YEAR = int(os.environ.get("CPBL_SEASON_YEAR", datetime.now().year))
 STANDINGS_PATH = DATA_DIR / "standings.json"
@@ -34,6 +37,12 @@ SYNC_STATUS_PATH = DATA_DIR / "sync_status.json"
 SEED_GAMES_PATH = BASE_DIR / "seed_games.json"
 DEFAULT_DATABASE_PATH = BASE_DIR / "instance" / "cpbl_data.db"
 DEFAULT_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+AI_RATE_LIMIT_WINDOW_SECONDS = 10 * 60
+AI_RATE_LIMIT_REQUESTS = 8
+AI_REQUEST_LOG = {}
+TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 
 app = Flask(__name__)
 CORS(app)
@@ -69,6 +78,82 @@ USER_CARD_EXTRA_COLUMNS = {
 TEAMS = ['中信兄弟', '味全龍', '樂天桃猿', '統一7-ELEVEn獅', '富邦悍將', '台鋼雄鷹']
 RARITIES = {"common", "rare", "holo", "legend"}
 PACK_COSTS = {"standard": 18, "premium": 60}
+BROTHERS_RARE_NAMES = {
+    "江坤宇",
+    "王威晨",
+    "許基宏",
+    "陳俊秀",
+    "岳政華",
+    "詹子賢",
+    "曾頌恩",
+    "高宇杰",
+    "勝騎士",
+}
+RAKUTEN_RARE_NAMES = {
+    "林立",
+    "林子偉",
+    "梁家榮",
+    "林承飛",
+    "林泓育",
+    "陳晨威",
+    "成晉",
+    "何品室融",
+    "陳冠宇",
+    "威能帝",
+}
+LIONS_RARE_NAMES = {
+    "陳傑憲",
+    "蘇智傑",
+    "邱智呈",
+    "林子豪",
+    "潘傑楷",
+    "陳重羽",
+    "布雷克",
+}
+DRAGONS_RARE_NAMES = {
+    "郭天信",
+    "李凱威",
+    "張政禹",
+    "劉基鴻",
+    "陳子豪",
+    "林孝程",
+    "林辰勳",
+    "鋼龍",
+    "魔神龍",
+}
+GUARDIANS_RARE_NAMES = {
+    "申皓瑋",
+    "林哲瑄",
+    "王正棠",
+    "范國宸",
+    "李宗賢",
+    "王念好",
+    "戴培峰",
+    "張進德",
+    "江國豪",
+    "張奕",
+}
+HAWKS_RARE_NAMES = {
+    "王柏融",
+    "藍寅倫",
+    "紀慶然",
+    "葉保弟",
+    "郭阜林",
+    "吳念庭",
+    "曾子祐",
+    "江承諺",
+    "黃子鵬",
+}
+TEAM_RARE_NAMES = {
+    "中信兄弟": BROTHERS_RARE_NAMES,
+    "樂天桃猿": RAKUTEN_RARE_NAMES,
+    "統一7-ELEVEn獅": LIONS_RARE_NAMES,
+    "統一7-11獅": LIONS_RARE_NAMES,
+    "統一獅": LIONS_RARE_NAMES,
+    "味全龍": DRAGONS_RARE_NAMES,
+    "富邦悍將": GUARDIANS_RARE_NAMES,
+    "台鋼雄鷹": HAWKS_RARE_NAMES,
+}
 
 def ensure_game_schema():
     existing = {
@@ -518,6 +603,179 @@ def require_auth_user():
         return None, (jsonify({"error": "請先登入"}), 401)
     return user, None
 
+def ai_request_allowed():
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    client_key = forwarded_for.split(",", 1)[0].strip() or request.remote_addr or "unknown"
+    now = time.time()
+    cutoff = now - AI_RATE_LIMIT_WINDOW_SECONDS
+    recent_requests = [
+        timestamp
+        for timestamp in AI_REQUEST_LOG.get(client_key, [])
+        if timestamp >= cutoff
+    ]
+    if len(recent_requests) >= AI_RATE_LIMIT_REQUESTS:
+        AI_REQUEST_LOG[client_key] = recent_requests
+        return False
+    recent_requests.append(now)
+    AI_REQUEST_LOG[client_key] = recent_requests
+    return True
+
+def game_ai_summary(game):
+    return {
+        "date": game.game_date,
+        "time": game.game_time,
+        "status": game.game_status,
+        "location": game.location,
+        "away": game.away_team,
+        "away_score": game.away_score,
+        "away_pitcher": game.away_pitcher,
+        "home": game.home_team,
+        "home_score": game.home_score,
+        "home_pitcher": game.home_pitcher,
+        "inning": infer_current_inning(game),
+        "winning_pitcher": game.winning_pitcher,
+        "losing_pitcher": game.losing_pitcher,
+        "save_pitcher": game.save_pitcher,
+        "mvp": game.mvp,
+        "mvp_team": game.mvp_team,
+        "mvp_note": game.mvp_note,
+    }
+
+def member_ai_summary(cards, lineup_slots):
+    rarity_values = {"common": 4, "rare": 8, "holo": 14, "legend": 24}
+    rarity_counts = {"common": 0, "rare": 0, "holo": 0, "legend": 0}
+    team_counts = {}
+
+    for card in cards:
+        rarity = card.rarity or "common"
+        rarity_counts[rarity] = rarity_counts.get(rarity, 0) + intish(card.count, 1)
+        if card.team:
+            team_counts[card.team] = team_counts.get(card.team, 0) + intish(card.count, 1)
+
+    lineup_players = [
+        slot.get("player")
+        for slot in lineup_slots
+        if isinstance(slot, dict) and isinstance(slot.get("player"), dict)
+    ]
+    lineup_team_counts = {}
+    for player in lineup_players:
+        team = player.get("team") or "未知球隊"
+        lineup_team_counts[team] = lineup_team_counts.get(team, 0) + 1
+
+    pitcher_ready = any(
+        isinstance(slot, dict)
+        and (slot.get("role") == "pitcher" or slot.get("order") == "P")
+        and isinstance(slot.get("player"), dict)
+        for slot in lineup_slots
+    )
+    batter_count = sum(
+        1
+        for slot in lineup_slots[:9]
+        if isinstance(slot, dict) and isinstance(slot.get("player"), dict)
+    )
+    defense_count = len({
+        slot.get("defense")
+        for slot in lineup_slots[:9]
+        if isinstance(slot, dict) and slot.get("defense")
+    })
+    top_lineup_team, top_lineup_count = ("", 0)
+    if lineup_team_counts:
+        top_lineup_team, top_lineup_count = sorted(lineup_team_counts.items(), key=lambda item: item[1], reverse=True)[0]
+
+    rarity_score = sum(
+        rarity_values.get(str(player.get("rarity") or "common"), 4)
+        for player in lineup_players
+    )
+    lineup_score = (
+        rarity_score
+        + batter_count * 4
+        + (12 if pitcher_ready else 0)
+        + min(defense_count, 9) * 2
+        + max(0, top_lineup_count - 2) * 5
+    )
+
+    return {
+        "unique_cards": len(cards),
+        "total_cards": sum(intish(card.count, 1) for card in cards),
+        "team_card_counts": team_counts,
+        "rarity_counts": rarity_counts,
+        "lineup_score": lineup_score,
+        "lineup_batters": batter_count,
+        "lineup_pitcher_ready": pitcher_ready,
+        "lineup_top_team": top_lineup_team,
+        "lineup_top_team_count": top_lineup_count,
+    }
+
+def build_ai_context(user=None, active_page=""):
+    now = datetime.now(TAIPEI_TIMEZONE)
+    today = now.strftime("%m/%d")
+    today_games = Game.query.filter_by(game_date=today).order_by(Game.game_time.asc()).limit(6).all()
+    recent_games = (
+        Game.query
+        .filter(Game.game_status.in_(["FINISH", "FINAL"]))
+        .order_by(Game.game_date.desc(), Game.id.desc())
+        .limit(6)
+        .all()
+    )
+    upcoming_games = (
+        Game.query
+        .filter(Game.game_status.notin_(["FINISH", "FINAL", "延賽", "POSTPONED"]))
+        .order_by(Game.game_date.asc(), Game.game_time.asc())
+        .limit(6)
+        .all()
+    )
+
+    standings_data = read_json_file(STANDINGS_PATH, {})
+    standings_rows = standings_data.get("h2h", []) if isinstance(standings_data, dict) else []
+    standings = [
+        {
+            "team": re.sub(r"^\d+", "", str(row.get("排名球隊", ""))),
+            "games": row.get("出賽數", ""),
+            "record": row.get("勝-和-敗", ""),
+            "pct": row.get("勝率", ""),
+            "gb": row.get("勝差", ""),
+            "streak": row.get("連勝/連敗", ""),
+            "last10": row.get("近十場戰績", ""),
+        }
+        for row in standings_rows[:6]
+        if isinstance(row, dict)
+    ]
+
+    context = {
+        "server_date": now.strftime("%Y-%m-%d"),
+        "timezone": "Asia/Taipei",
+        "active_page": str(active_page or "")[:40],
+        "today_games": [game_ai_summary(game) for game in today_games],
+        "recent_finished_games": [game_ai_summary(game) for game in recent_games],
+        "upcoming_games": [game_ai_summary(game) for game in upcoming_games],
+        "standings": standings,
+    }
+
+    if user:
+        all_cards = UserCard.query.filter_by(user_id=user.id).all()
+        cards = sorted(all_cards, key=lambda card: (card.rarity or "", card.name or ""), reverse=True)[:30]
+        lineup = UserLineup.query.filter_by(user_id=user.id).first()
+        lineup_slots = lineup_to_dict(lineup).get("slots", [])
+        context["member"] = {
+            "username": user.username,
+            "favorite_team": user.favorite_team,
+            "card_points": user.card_points,
+            "summary": member_ai_summary(all_cards, lineup_slots),
+            "cards": [
+                {
+                    "name": card.name,
+                    "team": card.team,
+                    "position": card.position,
+                    "rarity": card.rarity,
+                    "count": card.count,
+                }
+                for card in cards
+            ],
+            "lineup": lineup_slots,
+        }
+
+    return context
+
 def clean_username(value):
     value = re.sub(r'\s+', '', str(value or '')).strip()
     return value[:40]
@@ -562,12 +820,14 @@ def normalize_lineup_payload(payload):
         raise ValueError("打線格式錯誤")
 
     normalized = []
-    for index in range(9):
+    for index in range(10):
         raw = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
         player = raw.get("player")
+        is_pitcher_slot = index == 9
         normalized.append({
-            "order": index + 1,
-            "defense": str(raw.get("defense") or "")[:20],
+            "order": "P" if is_pitcher_slot else index + 1,
+            "role": "pitcher" if is_pitcher_slot else "batter",
+            "defense": "投手" if is_pitcher_slot else str(raw.get("defense") or "")[:20],
             "player": normalize_card_payload(player) if isinstance(player, dict) and clean_player_name(player.get("name")) else None,
         })
     return normalized
@@ -610,6 +870,9 @@ def rarity_point_value(rarity):
 
 def rarity_from_player(player):
     name = clean_player_name(player.get("name"))
+    team = clean_player_name(player.get("team"))
+    if team in TEAM_RARE_NAMES:
+        return "rare" if name in TEAM_RARE_NAMES[team] else "common"
     if name == "頌恩":
         return "legend"
     token = sum(ord(ch) for ch in name)
@@ -620,6 +883,26 @@ def rarity_from_player(player):
     if token % 5 == 0:
         return "rare"
     return "common"
+
+def team_rare_pool(players, team):
+    rare_names = TEAM_RARE_NAMES.get(team, set())
+    return [
+        player for player in players
+        if isinstance(player, dict)
+        and clean_player_name(player.get("team")) == team
+        and clean_player_name(player.get("name")) in rare_names
+    ]
+
+def keep_team_rare_on_new_list(player, players, rarity):
+    if rarity != "rare":
+        return player
+    team = clean_player_name(player.get("team"))
+    if team not in TEAM_RARE_NAMES:
+        return player
+    if clean_player_name(player.get("name")) in TEAM_RARE_NAMES[team]:
+        return player
+    pool = team_rare_pool(players, team)
+    return dict(random.choice(pool)) if pool else player
 
 def choose_reward_player(guaranteed_holo=False):
     players = read_json_file(PLAYERS_POOL_PATH, [])
@@ -668,7 +951,9 @@ def choose_pack_player(pack_type="standard"):
         if isinstance(player, dict) and clean_player_name(player.get("name")) and "二軍" not in str(player.get("team") or "")
     ] or players
     player = dict(random.choice(pool))
-    player["rarity"] = roll_pack_rarity(pack_type)
+    rarity = roll_pack_rarity(pack_type)
+    player = keep_team_rare_on_new_list(player, pool, rarity)
+    player["rarity"] = rarity
     if clean_player_name(player.get("name")) == "頌恩":
         player["rarity"] = "legend"
     return player
@@ -1367,6 +1652,99 @@ def convert_duplicate_cards():
         "user": user_to_dict(user),
     })
 
+@app.route('/api/cards/fuse', methods=['POST'])
+def fuse_cards():
+    user, error = require_auth_user()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    materials = payload.get("materials")
+    slots = intish(payload.get("slots"), 3)
+
+    if slots not in {3, 5}:
+        return jsonify({"error": "合成插槽數量必須為 3 或 5"}), 400
+
+    if not isinstance(materials, list) or len(materials) != slots:
+        return jsonify({"error": f"必須提供剛好 {slots} 張球員卡作為材料"}), 400
+
+    material_counts = {}
+    for name in materials:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        cleaned = clean_player_name(name)
+        material_counts[cleaned] = material_counts.get(cleaned, 0) + 1
+
+    user_cards = {card.name: card for card in UserCard.query.filter_by(user_id=user.id).all()}
+    
+    for name, required_count in material_counts.items():
+        card = user_cards.get(name)
+        if not card:
+            return jsonify({"error": f"你沒有球員「{name}」的卡片"}), 400
+        if card.rarity != "common":
+            return jsonify({"error": f"球員「{name}」不是一般稀有度，無法作為合成材料"}), 400
+        if intish(card.count, 1) < required_count:
+            return jsonify({"error": f"球員「{name}」的卡片數量不足（需要 {required_count} 張，目前有 {card.count} 張）"}), 400
+
+    for name, count_to_deduct in material_counts.items():
+        card = user_cards[name]
+        card.count = intish(card.count, 1) - count_to_deduct
+        if card.count <= 0:
+            db.session.delete(card)
+
+    value = random.random()
+    if slots == 5:
+        if value < 0.10:
+            new_rarity = "legend"
+        elif value < 0.35:
+            new_rarity = "holo"
+        else:
+            new_rarity = "rare"
+    else:
+        if value < 0.05:
+            new_rarity = "legend"
+        elif value < 0.20:
+            new_rarity = "holo"
+        else:
+            new_rarity = "rare"
+
+    players = read_json_file(PLAYERS_POOL_PATH, [])
+    if not isinstance(players, list) or not players:
+        return jsonify({"error": "球員池沒有資料，請先同步球員資料"}), 400
+        
+    usable_players = [
+        p for p in players 
+        if isinstance(p, dict) and clean_player_name(p.get("name")) and "二軍" not in str(p.get("team") or "")
+    ] or players
+    
+    selected_player = dict(random.choice(usable_players))
+    selected_player = keep_team_rare_on_new_list(selected_player, usable_players, new_rarity)
+    selected_player["rarity"] = new_rarity
+    player_name = clean_player_name(selected_player.get("name"))
+    if player_name == "頌恩":
+        selected_player["rarity"] = "legend"
+
+    new_card_payload = {
+        "name": player_name,
+        "team": selected_player.get("team") or "",
+        "position": selected_player.get("position") or "",
+        "description": selected_player.get("description") or "在熔煉爐中誕生的全新卡牌！",
+        "rarity": selected_player["rarity"],
+        "count": 1
+    }
+    
+    new_card = upsert_user_card(user, new_card_payload)
+    db.session.commit()
+
+    updated_cards = UserCard.query.filter_by(user_id=user.id).order_by(UserCard.name.asc()).all()
+
+    return jsonify({
+        "status": "success",
+        "new_card": card_to_dict(new_card),
+        "cards": [card_to_dict(c) for c in updated_cards],
+        "user": user_to_dict(user)
+    })
+
 @app.route('/api/lineup', methods=['GET'])
 def get_user_lineup():
     user, error = require_auth_user()
@@ -1932,6 +2310,92 @@ def get_news():
 
     return jsonify(NEWS_FALLBACK[:limit])
 
+@app.route('/api/ai/chat', methods=['POST'])
+def ai_chat():
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not api_key:
+        return jsonify({
+            "error": "AI 尚未設定，請在後端環境變數加入 GROQ_API_KEY。"
+        }), 503
+
+    if not ai_request_allowed():
+        return jsonify({
+            "error": "AI 詢問得有點快，請過幾分鐘再試。"
+        }), 429
+
+    payload = request.get_json(silent=True) or {}
+    raw_messages = payload.get("messages")
+    if not isinstance(raw_messages, list):
+        return jsonify({"error": "對話格式錯誤"}), 400
+
+    messages = []
+    for item in raw_messages[-10:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = str(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content[:2000]})
+
+    if not messages or messages[-1]["role"] != "user":
+        return jsonify({"error": "請輸入想問的問題"}), 400
+
+    context = build_ai_context(get_auth_user(), payload.get("active_page"))
+    system_prompt = (
+        "你是 GoBase AI，一位熟悉中華職棒的繁體中文球迷助理。"
+        "回答要親切、精簡、容易閱讀。你可以解釋棒球規則、分析提供的賽事資料、"
+        "整理比分與戰績，以及在會員資料存在時協助卡牌與打線建議。"
+        "只能把下方 CONTEXT 當成 GoBase 內的即時資料；資料沒有提供時要明確說目前查不到，"
+        "不可捏造球員、比分、賽程、傷勢或官方公告。"
+        "若使用者詢問醫療、賭博或投注，只提供一般資訊並提醒自行判斷。"
+        f"\n\nCONTEXT:\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
+    )
+
+    try:
+        response = requests.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "system", "content": system_prompt}, *messages],
+                "temperature": 0.35,
+                "max_completion_tokens": 700,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        result = response.json()
+        answer = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        if not answer:
+            raise ValueError("Groq 未回傳回答")
+        return jsonify({
+            "answer": answer,
+            "model": result.get("model") or GROQ_MODEL,
+        })
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 502
+        detail = ""
+        if e.response is not None:
+            try:
+                detail = e.response.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = ""
+        print(f"Groq API error ({status}): {detail or e}")
+        if status == 401:
+            return jsonify({"error": "Groq API Key 無效，請重新確認後端環境變數。"}), 502
+        if status == 429:
+            return jsonify({"error": "AI 使用量暫時達到限制，請稍後再試。"}), 429
+        return jsonify({"error": "Groq AI 暫時無法回應，請稍後再試。"}), 502
+    except requests.RequestException as e:
+        print(f"Groq connection error: {e}")
+        return jsonify({"error": "目前無法連線到 Groq AI。"}), 502
+    except Exception as e:
+        print(f"AI response error: {e}")
+        return jsonify({"error": "AI 回答處理失敗，請稍後再試。"}), 500
+
 @app.route('/api/health')
 def health():
     game_count = Game.query.count()
@@ -1943,6 +2407,7 @@ def health():
         "games": game_count,
         "standings_ready": STANDINGS_PATH.exists(),
         "players_ready": PLAYERS_POOL_PATH.exists(),
+        "ai_ready": bool(os.environ.get("GROQ_API_KEY", "").strip()),
     })
 
 @app.route('/api/selenium/health')

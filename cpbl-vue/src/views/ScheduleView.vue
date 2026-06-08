@@ -181,11 +181,12 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref } from "vue";
 import { API_BASE, cpblApi } from "../api/cpblApi";
 import { SEASON_YEAR, getTodayMMDD, getWeekdayStr, groupBy } from "../utils";
 import StateBox from "../components/StateBox.vue";
 import GameCard from "../components/GameCard.vue";
+import { applyGameDetailUpdate, hydrateMissingGameDetails } from "../composables/useGameDetailUpdate";
 
 defineEmits(["open-game"]);
 
@@ -285,8 +286,9 @@ function goToday() {
   viewMode.value = 'calendar'
 }
 
-function showDayDetail(date) {
+async function showDayDetail(date) {
   selectedDate.value = date;
+  await hydrateMissingGameDetails(games, cpblApi, { date, limit: 4 })
 }
 
 async function syncMonth() {
@@ -302,5 +304,16 @@ async function syncMonth() {
   }
 }
 
-onMounted(loadSchedule);
+function handleGameDetailUpdated(event) {
+  applyGameDetailUpdate(games, event)
+}
+
+onMounted(() => {
+  window.addEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
+  loadSchedule()
+});
+
+onUnmounted(() => {
+  window.removeEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
+});
 </script>

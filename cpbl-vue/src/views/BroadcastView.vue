@@ -120,11 +120,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import { SEASON_YEAR, getTodayMMDD } from '../utils'
 import GameCard from '../components/GameCard.vue'
 import StateBox from '../components/StateBox.vue'
+import { applyGameDetailUpdate, hydrateMissingGameDetails } from '../composables/useGameDetailUpdate'
 
 defineEmits(['open-game'])
 
@@ -183,6 +184,7 @@ async function loadGames() {
       date: selectedDate.value,
       team: selectedTeam.value
     })
+    await hydrateMissingGameDetails(games, cpblApi, { date: selectedDate.value, limit: 4 })
   } catch (err) {
     console.error(err)
     error.value = '文字轉播賽事讀取失敗，請確認 Flask 後端是否啟動。'
@@ -191,5 +193,16 @@ async function loadGames() {
   }
 }
 
-onMounted(loadGames)
+function handleGameDetailUpdated(event) {
+  applyGameDetailUpdate(games, event)
+}
+
+onMounted(() => {
+  window.addEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
+  loadGames()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('cpbl-game-detail-updated', handleGameDetailUpdated)
+})
 </script>

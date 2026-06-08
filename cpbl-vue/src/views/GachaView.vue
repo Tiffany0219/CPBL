@@ -105,24 +105,7 @@
           <span v-for="n in 12" :key="n" :style="{ '--i': n }"></span>
         </div>
 
-        <div v-if="opening" class="pack-opening">
-          <div class="pack-card-stack">
-            <span></span>
-            <span></span>
-            <strong>
-              <i class="fa-solid fa-baseball"></i>
-              GOBASE
-            </strong>
-          </div>
-          <div class="opening-status">
-            <span>{{ openingStepLabel }}</span>
-            <h3>{{ openingTitle }}</h3>
-            <p>{{ openingMessage }}</p>
-          </div>
-        </div>
-
-        <StateBox v-else-if="loading" type="loading" message="正在聯繫球探中..." />
-        <StateBox v-else-if="error" type="error" title="抽卡失敗" :message="error" />
+        <StateBox v-if="error" type="error" title="抽卡失敗" :message="error" />
         <div v-else-if="player" :key="drawKey" class="gacha-result-shell">
         <article
           :class="['player-card-site', rarityClass]"
@@ -230,6 +213,23 @@
           </div>
         </aside>
         </div>
+        <div v-else-if="opening" class="pack-opening">
+          <div class="pack-card-stack">
+            <span></span>
+            <span></span>
+            <strong>
+              <i class="fa-solid fa-baseball"></i>
+              GOBASE
+            </strong>
+          </div>
+          <div class="opening-status">
+            <span>{{ openingStepLabel }}</span>
+            <h3>{{ openingTitle }}</h3>
+            <p>{{ openingMessage }}</p>
+          </div>
+        </div>
+
+        <StateBox v-else-if="loading" type="loading" message="正在聯繫球探中..." />
         <div v-else class="card-display-empty">
           <div class="empty-pack-preview">
             <i class="fa-solid fa-baseball"></i>
@@ -244,7 +244,7 @@
 </template>
 
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import { resolveCheerSong, saveCheerOverride, youtubeEmbedUrl } from '../composables/useCheerSong'
@@ -273,6 +273,8 @@ const cheerOverrideVersion = ref(0)
 const cheerVideoInput = ref('')
 const drawKey = ref(0)
 const recentDraws = ref([])
+const playerPool = ref([])
+const poolLoading = ref(false)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
 
 const packMode = ref('standard')
@@ -371,13 +373,39 @@ async function saveToInventory(p) {
   }
 }
 
+async function loadPlayerPool(force = false) {
+  if (!force && playerPool.value.length) return playerPool.value
+  if (poolLoading.value) {
+    while (poolLoading.value) await delay(80)
+    if (!force && playerPool.value.length) return playerPool.value
+  }
+
+  poolLoading.value = true
+  try {
+    const players = await cpblApi.getPlayerPool()
+    playerPool.value = Array.isArray(players) ? players : []
+    return playerPool.value
+  } finally {
+    poolLoading.value = false
+  }
+}
+
 async function getPool() {
-  const players = await cpblApi.getPlayerPool()
-  if (!Array.isArray(players) || players.length === 0) throw new Error('球員池沒有資料')
+  let players = await loadPlayerPool()
+  if (!players.length) {
+    await cpblApi.initPlayerPool()
+    players = await loadPlayerPool(true)
+  }
+  if (!players.length) throw new Error('球員池沒有資料')
   return players
 }
 
 async function drawCard() {
+  if (!auth?.token?.value) {
+    error.value = '請先登入或註冊，才能把抽到的球員存進收藏冊。'
+    return
+  }
+
   loading.value = true
   opening.value = true
   openingStep.value = 'shuffle'
@@ -405,6 +433,9 @@ async function drawCard() {
     imageMissing.value = false
     playCheerSong()
     await saveToInventory(player.value)
+    loading.value = false
+    opening.value = false
+    openingStep.value = 'idle'
     addRecentDraw(player.value)
     notify({
       type: ['holo', 'legend'].includes(rarity.value) ? 'success' : 'info',
@@ -453,6 +484,9 @@ async function openPointPack(packType) {
     if (auth.user) auth.user.value = result.user
     addPlayerToCollection(result.card)
     await auth.refreshCards?.()
+    loading.value = false
+    opening.value = false
+    openingStep.value = 'idle'
     addRecentDraw(result.card)
     notify({
       type: ['holo', 'legend'].includes(playerRarity(result.card)) ? 'success' : 'info',
@@ -553,4 +587,10 @@ function saveCheerLink() {
   playCheerSong()
   notify({ type: 'success', title: '應援曲已收錄', message: `${cleanName.value} 下次抽到會直接播放。` })
 }
+
+onMounted(() => {
+  loadPlayerPool().catch(() => {
+    playerPool.value = []
+  })
+})
 </script>

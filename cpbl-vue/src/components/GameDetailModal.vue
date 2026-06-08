@@ -73,6 +73,64 @@
           </div>
         </section>
 
+        <!-- 歷史對戰與勝率預測 -->
+        <section v-if="predictionData.hasData" class="detail-section detail-prediction-section">
+          <div class="detail-section-title">
+            <div>
+              <p class="eyebrow">PREDICTION & H2H</p>
+              <h3>對戰數據與勝率預估</h3>
+            </div>
+            <div class="rhe-pills">
+              <span>數據指標預估</span>
+            </div>
+          </div>
+
+          <div class="prediction-bar-wrapper">
+            <div class="prediction-bar-header">
+              <span class="team-label away" :style="{ color: awayTeamColor }">
+                {{ detail.away_team }} {{ predictionData.awayWinRate }}%
+              </span>
+              <span class="prediction-vs">VS</span>
+              <span class="team-label home" :style="{ color: homeTeamColor }">
+                {{ predictionData.homeWinRate }}% {{ detail.home_team }}
+              </span>
+            </div>
+
+            <div class="prediction-meter-bg" :style="{ backgroundColor: homeTeamColor }">
+              <div
+                class="prediction-meter-fill"
+                :style="{
+                  width: `${predictionData.awayWinRate}%`,
+                  backgroundColor: awayTeamColor,
+                  boxShadow: `0 0 12px ${awayTeamColor}80`
+                }"
+              ></div>
+            </div>
+            <p class="prediction-hint">
+              *勝率根據雙方本季整體勝率 (40%)、歷史對戰 (40%) 及近期十場與連勝敗近況 (20%) 計算而得。
+            </p>
+          </div>
+
+          <div class="matchup-table-wrapper">
+            <div class="matchup-table-header">
+              <span>{{ detail.away_team }}</span>
+              <span>比較項目</span>
+              <span>{{ detail.home_team }}</span>
+            </div>
+            <div class="matchup-table-body">
+              <div
+                v-for="(stat, idx) in predictionData.compareStats"
+                :key="'stat-' + idx"
+                class="matchup-row"
+              >
+                <span class="matchup-val away">{{ stat.away }}</span>
+                <span class="matchup-label">{{ stat.label }}</span>
+                <span class="matchup-val home">{{ stat.home }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 逐局比分 -->
         <section class="detail-section">
           <div class="detail-section-title">
@@ -270,8 +328,9 @@
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
-import { API_BASE } from '../api/cpblApi'
+import { computed, ref, watch } from 'vue'
+import { API_BASE, cpblApi } from '../api/cpblApi'
+import { TEAM_COLORS } from '../composables/usePlayerCollection'
 import StateBox from './StateBox.vue'
 import BaseDiamond from './BaseDiamond.vue'
 
@@ -377,10 +436,160 @@ function isTotalRow(name = '') {
   return name === 'Total'
 }
 
+const standings = ref(null)
+const loadingStandings = ref(false)
+
+async function loadStandings() {
+  if (standings.value) return
+  loadingStandings.value = true
+  try {
+    standings.value = await cpblApi.getStandings()
+  } catch (err) {
+    console.error('載入戰績失敗', err)
+  } finally {
+    loadingStandings.value = false
+  }
+}
+
+function normalizeTeamName(name) {
+  if (!name) return ''
+  const n = name.trim()
+  if (n.includes('統一') || n.includes('獅')) return '統一7-ELEVEn獅'
+  if (n.includes('兄弟')) return '中信兄弟'
+  if (n.includes('桃猿') || n.includes('樂天')) return '樂天桃猿'
+  if (n.includes('龍') || n.includes('味全')) return '味全龍'
+  if (n.includes('悍將') || n.includes('富邦')) return '富邦悍將'
+  if (n.includes('雄鷹') || n.includes('台鋼')) return '台鋼雄鷹'
+  return n
+}
+
+const findTeamRow = (teamName) => {
+  if (!standings.value?.h2h) return null
+  const target = normalizeTeamName(teamName)
+  return standings.value.h2h.find(row => {
+    const rowTeam = row["排名球隊"] ? row["排名球隊"].replace(/^\d+/, '').trim() : ''
+    return normalizeTeamName(rowTeam) === target
+  })
+}
+
+const awayTeamColor = computed(() => TEAM_COLORS[props.detail?.away_team] || '#1f5f99')
+const homeTeamColor = computed(() => TEAM_COLORS[props.detail?.home_team] || '#0f766e')
+
+const predictionData = computed(() => {
+  if (!props.detail || !standings.value?.h2h) {
+    return { awayWinRate: 50, homeWinRate: 50, hasData: false }
+  }
+
+  const awayTeam = props.detail.away_team
+  const homeTeam = props.detail.home_team
+
+  const awayRow = findTeamRow(awayTeam)
+  const homeRow = findTeamRow(homeTeam)
+
+  if (!awayRow || !homeRow) {
+    return { awayWinRate: 50, homeWinRate: 50, hasData: false }
+  }
+
+  // 1. Overall win rate
+  const awayOverall = parseFloat(awayRow["勝率"]) || 0.5
+  const homeOverall = parseFloat(homeRow["勝率"]) || 0.5
+
+  // 2. Head-to-Head win rate
+  const normalizedHome = normalizeTeamName(homeTeam)
+  let h2hRecord = ''
+  for (const key of Object.keys(awayRow)) {
+    if (normalizeTeamName(key) === normalizedHome) {
+      h2hRecord = awayRow[key]
+      break
+    }
+  }
+
+  let awayH2HWinRate = 0.5
+  if (h2hRecord && h2hRecord.includes('-')) {
+    const parts = h2hRecord.split('-').map(Number)
+    if (parts.length >= 3) {
+      const w = parts[0]
+      const l = parts[2]
+      if (w + l > 0) {
+        awayH2HWinRate = w / (w + l)
+      }
+    }
+  }
+
+  const homeH2HWinRate = 1 - awayH2HWinRate
+
+  // 3. Streak modifier
+  const parseStreak = (streakStr) => {
+    if (!streakStr) return 0
+    const match = streakStr.match(/(勝|敗)(\d+)/)
+    if (match) {
+      const type = match[1]
+      const val = parseInt(match[2], 10)
+      return type === '勝' ? val * 0.02 : -val * 0.02
+    }
+    return 0
+  }
+  const awayStreakMod = Math.max(-0.06, Math.min(0.06, parseStreak(awayRow["連勝/連敗"])))
+  const homeStreakMod = Math.max(-0.06, Math.min(0.06, parseStreak(homeRow["連勝/連敗"])))
+
+  // 4. Calculate weighted score
+  const awayScore = (awayOverall * 0.4) + (awayH2HWinRate * 0.4) + (0.5 + awayStreakMod) * 0.2
+  const homeScore = (homeOverall * 0.4) + (homeH2HWinRate * 0.4) + (0.5 + homeStreakMod) * 0.2
+
+  // Normalize
+  let awayWinPercent = Math.round((awayScore / (awayScore + homeScore)) * 100)
+  awayWinPercent = Math.max(15, Math.min(85, awayWinPercent))
+  const homeWinPercent = 100 - awayWinPercent
+
+  // Gather compare stats
+  const compareStats = [
+    {
+      label: '聯盟排名',
+      away: awayRow["排名球隊"] ? '第 ' + (awayRow["排名球隊"].match(/^\d+/)?.[0] || '-') : '-',
+      home: homeRow["排名球隊"] ? '第 ' + (homeRow["排名球隊"].match(/^\d+/)?.[0] || '-') : '-'
+    },
+    {
+      label: '整體勝率',
+      away: `${(awayOverall * 100).toFixed(1)}%`,
+      home: `${(homeOverall * 100).toFixed(1)}%`
+    },
+    {
+      label: '近十場戰績',
+      away: awayRow["近十場戰績"] || '-',
+      home: homeRow["近十場戰績"] || '-'
+    },
+    {
+      label: '目前近況',
+      away: awayRow["連勝/連敗"] || '-',
+      home: homeRow["連勝/連敗"] || '-'
+    },
+    {
+      label: '主/客場戰績',
+      away: `客場 ${awayRow["客場戰績"] || '-'}`,
+      home: `主場 ${homeRow["主場戰績"] || '-'}`
+    },
+    {
+      label: '本季對戰紀錄',
+      away: h2hRecord ? `${h2hRecord.split('-')[0]} 勝 ${h2hRecord.split('-')[2]} 敗` : '無交手紀錄',
+      home: h2hRecord ? `${h2hRecord.split('-')[2]} 勝 ${h2hRecord.split('-')[0]} 敗` : '無交手紀錄'
+    }
+  ]
+
+  return {
+    awayWinRate: awayWinPercent,
+    homeWinRate: homeWinPercent,
+    compareStats,
+    hasData: true
+  }
+})
+
 watch(
   () => props.show,
   (value) => {
     document.body.style.overflow = value ? 'hidden' : ''
+    if (value) {
+      loadStandings()
+    }
   }
 )
 </script>

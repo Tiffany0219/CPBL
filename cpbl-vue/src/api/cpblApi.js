@@ -36,6 +36,13 @@ export const cpblApi = {
     return request('/health')
   },
 
+  askAi(messages, activePage, token) {
+    return postJson('/ai/chat', {
+      messages,
+      active_page: activePage
+    }, token)
+  },
+
   register(username, password) {
     return postJson('/auth/register', { username, password })
   },
@@ -166,5 +173,9 @@ export const cpblApi = {
 
   initPlayerPool() {
     return request('/init_pool')
+  },
+
+  fuseUserCards(materials, slots, token) {
+    return postJson('/cards/fuse', { materials, slots }, token)
   }
 }
