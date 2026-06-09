@@ -58,10 +58,30 @@
           </button>
         </div>
 
-        <div class="rarity-odds">
-          <div v-for="item in odds" :key="item.key" :class="['odds-row', item.key]">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.rate }}</strong>
+        <div class="rarity-odds-container">
+          <div class="odds-distribution-bar">
+            <div
+              v-for="item in odds"
+              :key="'bar-' + item.key"
+              :class="['distribution-segment', item.key]"
+              :style="{ width: item.rate }"
+              :title="item.label + ': ' + item.rate"
+            ></div>
+          </div>
+
+          <div class="rarity-odds">
+            <div v-for="item in odds" :key="item.key" :class="['odds-row', item.key]">
+              <div class="odds-row-left">
+                <span class="rarity-dot"></span>
+                <span>{{ item.label }}</span>
+              </div>
+              <div class="odds-row-right">
+                <div class="odds-progress-track">
+                  <div class="odds-progress-fill" :style="{ width: item.rate }"></div>
+                </div>
+                <strong>{{ item.rate }}</strong>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -108,8 +128,9 @@
         <StateBox v-if="error" type="error" title="抽卡失敗" :message="error" />
         <div v-else-if="player" :key="drawKey" class="gacha-result-shell">
         <article
-          :class="['player-card-site', rarityClass]"
+          :class="['player-card-site', rarityClass, { 'is-full-card': isFullCard }]"
           :style="{ '--team-color': teamColor }"
+          @click="isFullCard && !isDrawing && drawCard()"
         >
           <div class="holo-layer" aria-hidden="true"></div>
           <div class="card-inner-frame" aria-hidden="true"></div>
@@ -132,9 +153,9 @@
             </div>
             <img
               v-if="!imageMissing"
-              :src="playerImage"
+              :src="displayImage"
               :alt="cleanName"
-              @error="imageMissing = true"
+              @error="handleImageError"
             />
             <div v-else class="player-photo-fallback">
               {{ playerInitials }}
@@ -214,13 +235,8 @@
         </aside>
         </div>
         <div v-else-if="opening" class="pack-opening">
-          <div class="pack-card-stack">
-            <span></span>
-            <span></span>
-            <strong>
-              <i class="fa-solid fa-baseball"></i>
-              GOBASE
-            </strong>
+          <div class="gacha-pack-stage-card is-opening">
+            <img :src="gachaPackStage" alt="" aria-hidden="true" />
           </div>
           <div class="opening-status">
             <span>{{ openingStepLabel }}</span>
@@ -231,12 +247,9 @@
 
         <StateBox v-else-if="loading" type="loading" message="正在聯繫球探中..." />
         <div v-else class="card-display-empty">
-          <div class="empty-pack-preview">
-            <i class="fa-solid fa-baseball"></i>
-            <span>GOBASE PACK</span>
-          </div>
-          <h3>尚未開包</h3>
-          <p>點擊「開一包」開始抽取你的球員卡牌。</p>
+          <button class="gacha-pack-stage-card gacha-pack-stage-button" type="button" :disabled="isDrawing" @click="drawCard">
+            <img :src="gachaPackStage" alt="GoBase 球員包，點擊開包" />
+          </button>
         </div>
       </div>
     </section>
@@ -248,6 +261,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
 import { resolveCheerSong, saveCheerOverride, youtubeEmbedUrl } from '../composables/useCheerSong'
+import gachaPackStage from '../assets/gacha-pack-stage.png'
 import {
   addPlayerToCollection,
   cleanPlayerName,
@@ -273,6 +287,8 @@ const cheerOverrideVersion = ref(0)
 const cheerVideoInput = ref('')
 const drawKey = ref(0)
 const recentDraws = ref([])
+const triedNormalImage = ref(false)
+const playerImageOverride = ref('')
 const playerPool = ref([])
 const poolLoading = ref(false)
 const ASSET_BASE = API_BASE.replace(/\/api$/, '')
@@ -318,7 +334,21 @@ const rarityHeadline = computed(() => {
 const rarityStars = computed(() => ({ common: '★', rare: '★★', holo: '✦✦✦', legend: '★★★' }[rarity.value] || '★'))
 const teamColor = computed(() => getTeamColor(player.value?.team))
 const playerInitials = computed(() => getPlayerInitials(player.value))
-const playerImage = computed(() => `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`)
+const isFullCard = computed(() => {
+  return player.value && (player.value.is_full_card || cleanName.value === '江坤宇') && !triedNormalImage.value
+})
+const playerImage = computed(() => {
+  const name = cleanName.value
+  if (!name) return ''
+  if (player.value && (player.value.is_full_card || name === '江坤宇')) {
+    return `${ASSET_BASE}/static/image/players/${encodeURIComponent(name)}_card.png`
+  }
+  return `${ASSET_BASE}/static/image/players/${encodeURIComponent(name)}.png`
+})
+const displayImage = computed(() => {
+  if (playerImageOverride.value) return playerImageOverride.value
+  return playerImage.value
+})
 const cheerSong = computed(() => {
   cheerOverrideVersion.value
   return resolveCheerSong(player.value || {})
@@ -411,6 +441,8 @@ async function drawCard() {
   openingStep.value = 'shuffle'
   error.value = ''
   player.value = null
+  triedNormalImage.value = false
+  playerImageOverride.value = ''
   cheerPlayerReady.value = false
   cheerVideoInput.value = ''
   imageMissing.value = false
@@ -468,6 +500,8 @@ async function openPointPack(packType) {
   openingStep.value = 'shuffle'
   error.value = ''
   player.value = null
+  triedNormalImage.value = false
+  playerImageOverride.value = ''
   cheerPlayerReady.value = false
   cheerVideoInput.value = ''
   imageMissing.value = false
@@ -506,6 +540,15 @@ async function openPointPack(packType) {
 
 function delay(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function handleImageError() {
+  if (isFullCard.value && !triedNormalImage.value) {
+    triedNormalImage.value = true
+    playerImageOverride.value = `${ASSET_BASE}/static/image/players/${encodeURIComponent(cleanName.value)}.png`
+  } else {
+    imageMissing.value = true
+  }
 }
 
 function playCheerSong() {
@@ -549,6 +592,8 @@ async function searchPlayer() {
   loading.value = true
   error.value = ''
   player.value = null
+  triedNormalImage.value = false
+  playerImageOverride.value = ''
   cheerPlayerReady.value = false
   cheerVideoInput.value = ''
   imageMissing.value = false

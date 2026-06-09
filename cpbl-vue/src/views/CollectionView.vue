@@ -338,7 +338,7 @@
           
           <div class="gacha-result-shell" style="display: flex; justify-content: center; margin-bottom: 24px;">
             <article
-              :class="['player-card-site', fusedResultCard.rarity || 'common']"
+              :class="['player-card-site', fusedResultCard.rarity || 'common', { 'is-full-card': isFusedResultFullCard }]"
               :style="{ '--team-color': teamColor(fusedResultCard.team), margin: '0 auto' }"
             >
               <div class="holo-layer" aria-hidden="true"></div>
@@ -353,8 +353,8 @@
               <div class="player-photo-wrap">
                 <img
                   v-if="!failedImages[cleanName(fusedResultCard)]"
-                  :src="playerImage(fusedResultCard)"
-                  @error="markImageFailed(fusedResultCard)"
+                  :src="fusedResultImage"
+                  @error="handleFusionImageError"
                 />
                 <div v-else class="player-photo-fallback">
                   {{ initials(fusedResultCard) }}
@@ -502,6 +502,31 @@ const isFusing = ref(false)
 const showFusionModal = ref(false)
 const animationRunning = ref(false)
 const fusedResultCard = ref(null)
+const triedNormalFusionImage = ref(false)
+const fusedImageOverride = ref('')
+
+const isFusedResultFullCard = computed(() => {
+  return fusedResultCard.value && (fusedResultCard.value.is_full_card || cleanName(fusedResultCard.value) === '江坤宇') && !triedNormalFusionImage.value
+})
+
+const fusedResultImage = computed(() => {
+  if (!fusedResultCard.value) return ''
+  if (fusedImageOverride.value) return fusedImageOverride.value
+  const name = cleanName(fusedResultCard.value)
+  if (isFusedResultFullCard.value) {
+    return `${ASSET_BASE}/static/image/players/${encodeURIComponent(name)}_card.png`
+  }
+  return playerImage(fusedResultCard.value)
+})
+
+function handleFusionImageError() {
+  if (isFusedResultFullCard.value && !triedNormalFusionImage.value) {
+    triedNormalFusionImage.value = true
+    fusedImageOverride.value = playerImage(fusedResultCard.value)
+  } else if (fusedResultCard.value) {
+    markImageFailed(fusedResultCard.value)
+  }
+}
 
 const commonCards = computed(() => {
   return collection.value.filter(player => (player.rarity || 'common') === 'common')
@@ -549,6 +574,8 @@ async function startFusion() {
   showFusionModal.value = true
   animationRunning.value = true
   fusedResultCard.value = null
+  triedNormalFusionImage.value = false
+  fusedImageOverride.value = ''
 
   const materials = fusionMaterials.value.map(p => cleanName(p))
 

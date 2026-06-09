@@ -927,18 +927,18 @@ def choose_reward_player(guaranteed_holo=False):
 def roll_pack_rarity(pack_type):
     value = random.random()
     if pack_type == "premium":
-        if value < 0.07:
+        if value < 0.06:
             return "legend"
-        if value < 0.25:
+        if value < 0.20:
             return "holo"
-        if value < 0.62:
+        if value < 0.55:
             return "rare"
         return "common"
     if value < 0.03:
         return "legend"
-    if value < 0.12:
+    if value < 0.10:
         return "holo"
-    if value < 0.34:
+    if value < 0.30:
         return "rare"
     return "common"
 
