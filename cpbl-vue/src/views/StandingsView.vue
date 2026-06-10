@@ -192,9 +192,17 @@ async function loadStandings() {
 async function syncStandings() {
   syncing.value = true
   try {
-    await cpblApi.updateStandings()
+    const result = await cpblApi.updateStandings()
     await loadStandings()
-    notify({ type: 'success', title: '戰績已更新', message: '球隊戰績資料同步完成。' })
+    if (result?.status === 'fallback') {
+      notify({
+        type: 'warning',
+        title: '已保留本機戰績',
+        message: result.message || '官方戰績頁暫時無法解析，已使用目前快取資料。'
+      })
+    } else {
+      notify({ type: 'success', title: '戰績已更新', message: '球隊戰績資料同步完成。' })
+    }
   } catch {
     notify({ type: 'error', title: '更新失敗', message: '請確認後端是否正常。' })
   } finally {

@@ -256,33 +256,36 @@ def make_driver():
     service = Service(chromedriver_path) if chromedriver_path else None
     return webdriver.Chrome(service=service, options=opts)
 
-def fetch_page_soup(url, click_list_tab=False):
+def fetch_page_soup(url, click_list_tab=False, force_selenium=False):
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     }
-    # 1. 嘗試以 requests 抓取
-    try:
-        print(f"嘗試使用 requests 快速抓取網頁: {url}")
-        session = requests.Session()
-        session.trust_env = False
-        res = session.get(url, headers=headers, timeout=12)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        if click_list_tab:
-            # 檢查是否含有 schedule 清單元素，如果有就直接使用，免開 Selenium
-            rows = soup.select('.ScheduleTableList table tbody tr, .game_item')
-            if len(rows) > 2:
-                print("預設網頁已含有賽程列表結構，免用 Selenium。")
-                return soup, None
+    # 1. 嘗試以 requests 抓取。動態頁可指定 force_selenium，避免空 HTML 被當成成功。
+    if not force_selenium:
+        try:
+            print(f"嘗試使用 requests 快速抓取網頁: {url}")
+            session = requests.Session()
+            session.trust_env = False
+            res = session.get(url, headers=headers, timeout=12)
+            res.raise_for_status()
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            if click_list_tab:
+                # 檢查是否含有 schedule 清單元素，如果有就直接使用，免開 Selenium
+                rows = soup.select('.ScheduleTableList table tbody tr, .game_item')
+                if len(rows) > 2:
+                    print("預設網頁已含有賽程列表結構，免用 Selenium。")
+                    return soup, None
+                else:
+                    print("預設網頁賽程列數不足，改用 Selenium 切換模式...")
             else:
-                print("預設網頁賽程列數不足，改用 Selenium 切換模式...")
-        else:
-            return soup, None
-    except Exception as req_err:
-        print(f"⚠️ requests 抓取失敗: {req_err}，嘗試使用 Selenium 備援...")
+                return soup, None
+        except Exception as req_err:
+            print(f"⚠️ requests 抓取失敗: {req_err}，嘗試使用 Selenium 備援...")
+    else:
+        print(f"使用 Selenium 抓取動態網頁: {url}")
 
     # 2. 嘗試以 Selenium 抓取
     driver = None
@@ -2085,7 +2088,7 @@ def update_specific_month():
 def update_standings():
     driver = None
     try:
-        soup, driver = fetch_page_soup("https://www.cpbl.com.tw/standings/season")
+        soup, driver = fetch_page_soup("https://www.cpbl.com.tw/standings/season", force_selenium=True)
         
         # ✅ 改用明確等待，等到 table 真的出現才繼續
         if driver:
@@ -2128,6 +2131,24 @@ def update_standings():
             
             print(f"✅ {cat_key}: {len(rows_data)} 列, headers={headers}")
             all_data[cat_key] = rows_data
+
+        has_valid_standings = all(
+            isinstance(all_data.get(key), list) and len(all_data.get(key)) > 0
+            for key in categories
+        )
+        if not has_valid_standings:
+            cached = read_json_file(STANDINGS_PATH, {})
+            result = {
+                "status": "fallback",
+                "message": "官方戰績頁暫時沒有解析到完整資料，已保留目前本機快取。",
+                "data": cached,
+                "parsed_counts": {key: len(all_data.get(key, [])) for key in categories},
+            }
+            record_sync_status("standings", "球隊戰績", {
+                "status": "fallback",
+                "parsed_counts": result["parsed_counts"],
+            })
+            return jsonify(result)
 
         write_json_file(STANDINGS_PATH, all_data)
         result = {"status": "success", "data": all_data}
