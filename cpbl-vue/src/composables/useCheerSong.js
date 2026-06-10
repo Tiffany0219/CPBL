@@ -19,6 +19,7 @@ const DIRECT_URL_FIELDS = [
 const CHEER_SONGS = {
   // 之後只要補上球員姓名與 YouTube ID，抽到該球員就會直接播放。
   // 例：王威晨: { youtubeId: '影片ID', title: '王威晨 應援曲' }
+  '張育成': { youtubeId: 'ZdAvmv8cXvg', title: '張育成 應援曲' }
 }
 
 const CHEER_OVERRIDE_KEY = 'gobase_cheer_songs'
