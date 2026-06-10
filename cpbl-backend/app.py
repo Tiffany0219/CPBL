@@ -206,8 +206,40 @@ with app.app_context():
     seed_games_if_empty()
 
 def make_driver():
+    def cached_chrome_pair():
+        cache_root = Path.home() / ".cache" / "selenium"
+        chrome_root = cache_root / "chrome" / "mac-arm64"
+        driver_root = cache_root / "chromedriver" / "mac-arm64"
+        chrome_by_version = {
+            path.parent.parent.parent.parent.name: path
+            for path in chrome_root.glob(
+                "*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+            )
+            if path.is_file()
+        }
+        driver_by_version = {
+            path.parent.name: path
+            for path in driver_root.glob("*/chromedriver")
+            if path.is_file()
+        }
+        matching_versions = set(chrome_by_version) & set(driver_by_version)
+        if not matching_versions:
+            return None, None
+
+        latest = max(
+            matching_versions,
+            key=lambda value: tuple(int(part) for part in value.split(".")),
+        )
+        return chrome_by_version[latest], driver_by_version[latest]
+
     opts = Options()
-    chrome_bin = os.environ.get("CHROME_BIN")
+    chrome_bin = os.environ.get("CHROME_BIN", "").strip()
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH", "").strip()
+    if not chrome_bin or not chromedriver_path:
+        cached_chrome, cached_driver = cached_chrome_pair()
+        chrome_bin = chrome_bin or (str(cached_chrome) if cached_chrome else "")
+        chromedriver_path = chromedriver_path or (str(cached_driver) if cached_driver else "")
+
     if chrome_bin:
         opts.binary_location = chrome_bin
 
@@ -216,13 +248,64 @@ def make_driver():
     opts.add_argument('--disable-gpu')
     opts.add_argument('--disable-dev-shm-usage')
     opts.add_argument('--disable-extensions')
+    opts.add_argument('--no-proxy-server')
     opts.add_argument('--remote-debugging-port=9222')
     opts.add_argument('--window-size=1920,1080')
     opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
 
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
     service = Service(chromedriver_path) if chromedriver_path else None
     return webdriver.Chrome(service=service, options=opts)
+
+def fetch_page_soup(url, click_list_tab=False):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    # 1. 嘗試以 requests 抓取
+    try:
+        print(f"嘗試使用 requests 快速抓取網頁: {url}")
+        session = requests.Session()
+        session.trust_env = False
+        res = session.get(url, headers=headers, timeout=12)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        if click_list_tab:
+            # 檢查是否含有 schedule 清單元素，如果有就直接使用，免開 Selenium
+            rows = soup.select('.ScheduleTableList table tbody tr, .game_item')
+            if len(rows) > 2:
+                print("預設網頁已含有賽程列表結構，免用 Selenium。")
+                return soup, None
+            else:
+                print("預設網頁賽程列數不足，改用 Selenium 切換模式...")
+        else:
+            return soup, None
+    except Exception as req_err:
+        print(f"⚠️ requests 抓取失敗: {req_err}，嘗試使用 Selenium 備援...")
+
+    # 2. 嘗試以 Selenium 抓取
+    driver = None
+    try:
+        driver = make_driver()
+        driver.get(url)
+        if click_list_tab:
+            try:
+                from selenium.webdriver.common.by import By
+                driver.find_element(By.CSS_SELECTOR, "li[data-id='list']").click()
+                time.sleep(3)
+            except:
+                time.sleep(5)
+        else:
+            time.sleep(5)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        return soup, driver
+    except Exception as sel_err:
+        print(f"❌ Selenium 備援也失敗: {sel_err}")
+        if driver:
+            try: driver.quit()
+            except: pass
+        raise sel_err
 
 def cpbl_box_url(game_sno, year=None):
     target_year = year or SEASON_YEAR
@@ -298,6 +381,7 @@ def fetch_cpbl_game_payload(game_sno, year=None, kind_code="A"):
     target_year = year or SEASON_YEAR
     url = cpbl_box_url(game_sno, target_year)
     session = requests.Session()
+    session.trust_env = False
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Referer": url,
@@ -947,8 +1031,11 @@ def choose_pack_player(pack_type="standard"):
     if not isinstance(players, list) or not players:
         return None
     pool = [
-        player for player in players
-        if isinstance(player, dict) and clean_player_name(player.get("name")) and "二軍" not in str(player.get("team") or "")
+        attach_player_card_meta(player) for player in players
+        if isinstance(player, dict) and
+        clean_player_name(player.get("name")) and
+        "二軍" not in str(player.get("team") or "") and
+        player_has_card(player)
     ] or players
     player = dict(random.choice(pool))
     rarity = roll_pack_rarity(pack_type)
@@ -957,6 +1044,24 @@ def choose_pack_player(pack_type="standard"):
     if clean_player_name(player.get("name")) == "頌恩":
         player["rarity"] = "legend"
     return player
+
+def player_card_path(player):
+    name = clean_player_name(player.get("name") if isinstance(player, dict) else player)
+    if not name:
+        return None
+    return BASE_DIR / "static" / "image" / "players" / f"{name}_card.png"
+
+def player_has_card(player):
+    path = player_card_path(player)
+    return bool(path and path.exists())
+
+def attach_player_card_meta(player):
+    item = dict(player)
+    name = clean_player_name(item.get("name"))
+    has_card = player_has_card(item)
+    item["has_card"] = has_card
+    item["card_image"] = f"/static/image/players/{name}_card.png" if has_card else ""
+    return item
 
 # --- 格式化輔助函數：確保數據轉成陣列 ---
 # --- 格式化輔助函數：增加球員參數 ---
@@ -1087,78 +1192,12 @@ def get_game_detail(game_id):
         detail["source"] = payload["source"]
         return jsonify(detail)
     except Exception as e:
-        print(f"⚠️ 官方 JSON 解析失敗，改用 Selenium 備援: {e}")
-
-    driver = None
-    try:
-        driver = make_driver()
-        url = cpbl_box_url(game.game_sno)
-        driver.get(url)
-
-        # 🟢 強制點擊「詳細紀錄」標籤
-        driver.execute_script("""
-            var links = document.querySelectorAll('.tabs li a');
-            for(var i=0; i<links.length; i++){
-                if(links[i].innerText.includes('詳細紀錄')){
-                    links[i].click();
-                    break;
-                }
-            }
-        """)
-        
-        # 🟢 關鍵等待：RecordTable 需要時間載入
-        import time
-        time.sleep(10) 
-        driver.execute_script("window.scrollTo(0, 1000);")
-        time.sleep(2)
-        
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        line, a_p, h_p = parse_game_box(soup)
-        
-        # 🕵️ 核心邏輯：判斷比賽是否已經開始
-        # 檢查 RHE 是否有任何得分或安打，或者是否已經抓到球員名單
-        is_started = any(int(x) > 0 for x in line.get('away_rhe', ['0']) if x.isdigit()) or \
-                     any(int(x) > 0 for x in line.get('home_rhe', ['0']) if x.isdigit()) or \
-                     len(a_p) > 0
-
-        # 🟢 存入資料庫 (只有在比賽已經開始且抓到球員時才更新)
-        if is_started and a_p:
-            game.away_line = ",".join(line["away"])
-            game.home_line = ",".join(line["home"])
-            game.away_rhe = ",".join(line["away_rhe"])
-            game.home_rhe = ",".join(line["home_rhe"])
-            db.session.commit()
-            print(f"✅ 成功更新資料庫：客隊 {len(a_p)} 人")
-
-        # 🟢 回傳 JSON 給前端
-        detail = {
-            "away_team": game.away_team,
-            "home_team": game.home_team,
-            # 如果還沒開始，回傳空陣列讓前端顯示「尚未開始」
-            "away_line": line["away"] if is_started else [],
-            "home_line": line["home"] if is_started else [],
-            "away_rhe": line["away_rhe"] if is_started else ["0", "0", "0"],
-            "home_rhe": line["home_rhe"] if is_started else ["0", "0", "0"],
-            "away_players": a_p, # 若沒開始，parse_game_box 會回傳 []
-            "home_players": h_p,
-            "away_pitcher": game.away_pitcher,
-            "home_pitcher": game.home_pitcher,
-            "winning_pitcher": game.winning_pitcher,
-            "losing_pitcher": game.losing_pitcher,
-            "save_pitcher": game.save_pitcher,
-            "mvp": game.mvp,
-            "mvp_team": game.mvp_team,
-            "mvp_note": game.mvp_note,
-            "play_by_play": [],
-            "source": "selenium",
-        }
+        print(f"⚠️ 官方 JSON 解析失敗，回退使用資料庫快取: {e}")
+        detail = format_game_detail(game)
+        detail["play_by_play"] = []
+        detail["source"] = "cache"
+        detail["message"] = f"官方數據暫時無法取得，改用本機快取顯示。({e})"
         return jsonify(detail)
-
-    except Exception as e:
-        print(f"❌ 錯誤: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if driver: driver.quit()
 
 @app.route('/api/update/schedule')
 def update_schedule():
@@ -1169,10 +1208,8 @@ def update_schedule():
 
     driver = None
     try:
-        driver = make_driver()
-        driver.get(f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}")
-        time.sleep(10)
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        url = f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}"
+        soup, driver = fetch_page_soup(url)
         
         # 同時支援賽程表 (tr) 和 可能出現在清單中的 game_item
         rows = soup.select('.ScheduleTableList table tbody tr, .game_item')
@@ -1293,10 +1330,7 @@ def update_schedule():
 def update_today():
     driver = None
     try:
-        driver = make_driver()
-        driver.get("https://www.cpbl.com.tw/")
-        time.sleep(12) 
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        soup, driver = fetch_page_soup("https://www.cpbl.com.tw/")
         
         # 1. 確認日期
         d_node = soup.select_one('.date_selected .date, .date_select .date')
@@ -1918,18 +1952,18 @@ def update_specific_month():
     print(f"--- 🚀 執行升級版同步：目標 {target_year}/{target_m:02d} ---")
     driver = None
     try:
-        driver = make_driver()
-        driver.get(f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}")
-        time.sleep(5)
+        url = f"https://www.cpbl.com.tw/schedule?&GameType=1&Month={target_m:02d}&Year={target_year}"
+        soup, driver = fetch_page_soup(url, click_list_tab=True)
 
         # 確保切換到列表模式。若 CPBL 調整頁面結構，後續解析仍會嘗試使用目前頁面。
-        try:
-            driver.find_element(By.CSS_SELECTOR, "li[data-id='list']").click()
-            time.sleep(3)
-        except: pass
+        if driver:
+            try:
+                driver.find_element(By.CSS_SELECTOR, "li[data-id='list']").click()
+                time.sleep(3)
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+            except: pass
 
         # 開始解析
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
         rows = soup.select('.ScheduleTableList table tbody tr')
         
         last_date = ""
@@ -2051,21 +2085,20 @@ def update_specific_month():
 def update_standings():
     driver = None
     try:
-        driver = make_driver()
-        driver.get("https://www.cpbl.com.tw/standings/season")
+        soup, driver = fetch_page_soup("https://www.cpbl.com.tw/standings/season")
         
         # ✅ 改用明確等待，等到 table 真的出現才繼續
-        try:
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
-            )
-        except:
-            # 如果等不到，印出頁面源碼幫助偵錯
-            print("⚠️ 等待逾時，頁面源碼片段：")
-            print(driver.page_source[:3000])
-            return jsonify({"status": "error", "message": "頁面等待逾時"}), 500
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        if driver:
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
+                )
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+            except:
+                # 如果等不到，印出頁面源碼幫助偵錯
+                print("⚠️ 等待逾時，頁面源碼片段：")
+                print(driver.page_source[:3000])
+                return jsonify({"status": "error", "message": "頁面等待逾時"}), 500
         
         # ✅ 偵錯：先印出頁面裡找到哪些東西
         all_tables = soup.select('table')
@@ -2155,11 +2188,7 @@ def get_game_box():
     
     driver = None
     try:
-        driver = make_driver()
-        driver.get(url)
-        time.sleep(3) 
-        
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        soup, driver = fetch_page_soup(url)
         
         # 🟢 1. 解析比分板 (截圖最上方那塊)
         line_score = parse_line_score(soup)
@@ -2193,11 +2222,7 @@ def init_player_pool():
     url = "https://www.cpbl.com.tw/player"
     driver = None
     try:
-        driver = make_driver()
-        driver.get(url)
-        time.sleep(3)
-        
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        soup, driver = fetch_page_soup(url)
         player_links = soup.select('.PlayersList a')
         print(f"--- 偵錯資訊：抓到 {len(player_links)} 個球員連結 ---")
 
@@ -2226,9 +2251,24 @@ def init_player_pool():
             position = ''
             if href:
                 try:
-                    driver.get(href)
-                    time.sleep(2)  # 可以改成 random.uniform(1.5, 3.5) 更安全
-                    player_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                    # 1. 優先用 requests.get 獲取個別球員頁面
+                    try:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        }
+                        session = requests.Session()
+                        session.trust_env = False
+                        res = session.get(href, headers=headers, timeout=10)
+                        res.raise_for_status()
+                        player_soup = BeautifulSoup(res.text, 'html.parser')
+                    except Exception as req_err:
+                        print(f"⚠️ requests 抓取球員 {name} 失敗: {req_err}，改用 Selenium...")
+                        # 2. 備援：確保 driver 已啟動
+                        if not driver:
+                            driver = make_driver()
+                        driver.get(href)
+                        time.sleep(2)
+                        player_soup = BeautifulSoup(driver.page_source, 'html.parser')
 
                     h2 = player_soup.select_one('#Content .PageTitle h2')
                     if h2:
@@ -2267,7 +2307,10 @@ def init_player_pool():
 def get_player_pool():
     if not PLAYERS_POOL_PATH.exists():
         return jsonify({"error": "找不到球員池檔案，請先執行初始化"}), 404
-    return jsonify(read_json_file(PLAYERS_POOL_PATH, []))
+    players = read_json_file(PLAYERS_POOL_PATH, [])
+    if not isinstance(players, list):
+        return jsonify([])
+    return jsonify([attach_player_card_meta(player) for player in players if isinstance(player, dict)])
 
 @app.route('/api/top_stats')
 def get_top_stats():
@@ -2287,7 +2330,7 @@ def get_top_stats():
             "source": TOP_STATS_SOURCE_URL,
             "data": [],
             "message": str(e),
-        }), 500
+        }), 200
 
 @app.route('/api/get_news')
 def get_news():

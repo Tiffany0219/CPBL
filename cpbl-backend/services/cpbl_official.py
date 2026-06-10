@@ -52,7 +52,9 @@ def absolute_cpbl_url(path):
 
 
 def fetch_cpbl_news(limit=12):
-    res = requests.get(NEWS_SOURCE_URL, headers=DEFAULT_HEADERS, timeout=12)
+    session = requests.Session()
+    session.trust_env = False
+    res = session.get(NEWS_SOURCE_URL, headers=DEFAULT_HEADERS, timeout=12)
     res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")
@@ -88,7 +90,9 @@ def fetch_cpbl_news(limit=12):
 
 
 def fetch_cpbl_top_stats(limit=10):
-    res = requests.get(TOP_STATS_SOURCE_URL, headers=DEFAULT_HEADERS, timeout=12)
+    session = requests.Session()
+    session.trust_env = False
+    res = session.get(TOP_STATS_SOURCE_URL, headers=DEFAULT_HEADERS, timeout=12)
     res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")

@@ -506,7 +506,7 @@ const triedNormalFusionImage = ref(false)
 const fusedImageOverride = ref('')
 
 const isFusedResultFullCard = computed(() => {
-  return fusedResultCard.value && (fusedResultCard.value.is_full_card || cleanName(fusedResultCard.value) === '江坤宇') && !triedNormalFusionImage.value
+  return fusedResultCard.value && !triedNormalFusionImage.value
 })
 
 const fusedResultImage = computed(() => {

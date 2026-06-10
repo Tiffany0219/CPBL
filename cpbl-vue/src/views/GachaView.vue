@@ -19,8 +19,8 @@
       </div>
     </section>
 
-    <section class="gacha-layout">
-      <div class="gacha-panel">
+    <section :class="['gacha-layout', { 'is-result-mode': player && !opening }]">
+      <div :class="['gacha-panel', { 'is-result-mode': player && !opening }]">
         <div class="pack-console">
           <div class="pack-icon">
             <i class="fa-solid fa-box-open"></i>
@@ -231,6 +231,10 @@
               <i class="fa-brands fa-youtube"></i>
               YouTube 搜尋
             </a>
+            <button v-if="cheerSong.hasVideo" class="btn-delete" type="button" @click="removeCheerLink" title="刪除自訂應援曲連結">
+              <i class="fa-solid fa-trash-can"></i>
+              清除連結
+            </button>
           </div>
         </aside>
         </div>
@@ -260,7 +264,7 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { API_BASE, cpblApi } from '../api/cpblApi'
 import StateBox from '../components/StateBox.vue'
-import { resolveCheerSong, saveCheerOverride, youtubeEmbedUrl } from '../composables/useCheerSong'
+import { deleteCheerOverride, resolveCheerSong, saveCheerOverride, youtubeEmbedUrl } from '../composables/useCheerSong'
 import gachaPackStage from '../assets/gacha-pack-stage.png'
 import {
   addPlayerToCollection,
@@ -335,12 +339,12 @@ const rarityStars = computed(() => ({ common: '★', rare: '★★', holo: '✦�
 const teamColor = computed(() => getTeamColor(player.value?.team))
 const playerInitials = computed(() => getPlayerInitials(player.value))
 const isFullCard = computed(() => {
-  return player.value && (player.value.is_full_card || cleanName.value === '江坤宇') && !triedNormalImage.value
+  return player.value && !triedNormalImage.value
 })
 const playerImage = computed(() => {
   const name = cleanName.value
   if (!name) return ''
-  if (player.value && (player.value.is_full_card || name === '江坤宇')) {
+  if (player.value && !triedNormalImage.value) {
     return `${ASSET_BASE}/static/image/players/${encodeURIComponent(name)}_card.png`
   }
   return `${ASSET_BASE}/static/image/players/${encodeURIComponent(name)}.png`
@@ -451,12 +455,16 @@ async function drawCard() {
     await delay(420)
     openingStep.value = 'scout'
     await delay(380)
-    const filtered = players.filter(p => {
+    const playersWithCards = players.filter(p => p?.has_card)
+    if (!playersWithCards.length) {
+      throw new Error('NO_CARD_POOL')
+    }
+    const filtered = playersWithCards.filter(p => {
       const team = p.team || ''
       const name = p.name || ''
       return !team.includes('二軍') || name.includes('頌恩')
     })
-    const pool = filtered.length ? filtered : players
+    const pool = filtered.length ? filtered : playersWithCards
     const luckyPlayer = pool[Math.floor(Math.random() * pool.length)]
     openingStep.value = 'reveal'
     await delay(420)
@@ -477,6 +485,8 @@ async function drawCard() {
   } catch (err) {
     if (err.message === 'AUTH_REQUIRED') {
       error.value = '請先登入或註冊，才能把抽到的球員存進收藏冊。'
+    } else if (err.message === 'NO_CARD_POOL') {
+      error.value = '目前沒有可抽取的卡面圖，請先新增球員 _card.png 後再試一次。'
     } else if (err.message === 'SAVE_FAILED') {
       error.value = '卡牌儲存失敗，請確認後端 API 是否正常後再試一次。'
     } else {
@@ -631,6 +641,19 @@ function saveCheerLink() {
   cheerVideoInput.value = ''
   playCheerSong()
   notify({ type: 'success', title: '應援曲已收錄', message: `${cleanName.value} 下次抽到會直接播放。` })
+}
+
+function removeCheerLink() {
+  if (!player.value) return
+  const name = cleanName.value
+  const deleted = deleteCheerOverride(name)
+  if (deleted) {
+    cheerOverrideVersion.value += 1
+    cheerPlayerReady.value = false
+    notify({ type: 'success', title: '連結已刪除', message: `${name} 的應援曲連結已清除。` })
+  } else {
+    notify({ type: 'warning', title: '清除失敗', message: '該球員未設定自訂應援曲連結。' })
+  }
 }
 
 onMounted(() => {

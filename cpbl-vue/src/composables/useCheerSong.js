@@ -74,6 +74,18 @@ export function readCheerOverrides() {
   }
 }
 
+export function deleteCheerOverride(playerOrName) {
+  const name = cleanPlayerName(playerOrName)
+  if (!name) return false
+  const data = readCheerOverrides()
+  if (data[name]) {
+    delete data[name]
+    localStorage.setItem(CHEER_OVERRIDE_KEY, JSON.stringify(data))
+    return true
+  }
+  return false
+}
+
 function findYoutubeId(player = {}) {
   for (const field of DIRECT_ID_FIELDS) {
     if (player[field]) return String(player[field]).trim()
