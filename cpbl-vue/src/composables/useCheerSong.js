@@ -24,7 +24,8 @@ const CHEER_SONGS = {
   '邦利多': { youtubeId: 'AlsnmZW8a_Q', title: '邦力多 應援曲' },
   '申皓瑋': { youtubeId: 'JPtvrSibDHU', title: '申皓瑋 應援曲' },
   '王勝偉': { youtubeId: '3qqY55FOblU', title: '王勝偉 應援曲' },
-  '王念好': { youtubeId: 'Q8DgGgi0_nA', title: '王念好 應援曲' }
+  '王念好': { youtubeId: 'Q8DgGgi0_nA', title: '王念好 應援曲' },
+  '葉子霆': { youtubeId: 'z4FohkoIVLU', title: '葉子霆 應援曲' }
 }
 
 const CHEER_OVERRIDE_KEY = 'gobase_cheer_songs'
