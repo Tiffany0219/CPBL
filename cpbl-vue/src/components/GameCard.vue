@@ -11,6 +11,14 @@
       <div class="ticket-location">
         <i class="fa-solid fa-location-dot"></i>
         <span>{{ game.location || '未知球場' }}</span>
+        <span
+          v-if="weatherText"
+          :class="['ticket-weather', { risky: weatherRisk }]"
+          :title="weatherTitle"
+        >
+          <i :class="weatherIcon"></i>
+          {{ weatherText }}
+        </span>
       </div>
 
       <div class="ticket-meta">
@@ -242,6 +250,31 @@ const inningText = computed(() => {
   if (!value || value === 'LIVE' || value === 'Final') return ''
   if (props.game.status !== 'LIVE' && !value.includes('局')) return ''
   return value.includes('目前') ? value : `目前 ${value}`
+})
+
+const weather = computed(() => props.game.weather || null)
+const weatherRisk = computed(() => !!weather.value?.rain_risk)
+const weatherText = computed(() => cleanName(weather.value?.display))
+const weatherTitle = computed(() => {
+  if (!weather.value) return ''
+  const parts = [
+    weather.value.city,
+    weather.value.condition,
+    weather.value.temperature !== null && weather.value.temperature !== undefined
+      ? `${Math.round(Number(weather.value.temperature))}°C`
+      : '',
+    weather.value.precipitation_probability !== null && weather.value.precipitation_probability !== undefined
+      ? `降雨 ${weather.value.precipitation_probability}%`
+      : ''
+  ].filter(Boolean)
+  return parts.join(' · ')
+})
+const weatherIcon = computed(() => {
+  if (weatherRisk.value) return 'fa-solid fa-cloud-showers-heavy'
+  const condition = cleanName(weather.value?.condition)
+  if (condition.includes('雨')) return 'fa-solid fa-cloud-rain'
+  if (condition.includes('陰') || condition.includes('雲')) return 'fa-solid fa-cloud'
+  return 'fa-solid fa-sun'
 })
 
 function cleanName(value) {

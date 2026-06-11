@@ -135,6 +135,10 @@ export const cpblApi = {
     return request(`/get_news${buildQuery(params)}`)
   },
 
+  getVenueWeather(params = {}) {
+    return request(`/weather/venue${buildQuery(params)}`)
+  },
+
   getStandings() {
     return request('/get_standings')
   },

@@ -7,3 +7,4 @@ __pycache__
 *.pyc
 cpbl-backend/instance/*.db
 cpbl-vue/dist
+presentation.html

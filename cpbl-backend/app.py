@@ -43,6 +43,49 @@ AI_RATE_LIMIT_WINDOW_SECONDS = 10 * 60
 AI_RATE_LIMIT_REQUESTS = 8
 AI_REQUEST_LOG = {}
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
+WEATHER_CACHE = {}
+WEATHER_CACHE_SECONDS = 10 * 60
+
+VENUE_WEATHER_LOCATIONS = {
+    "大巨蛋": {"city": "台北市", "latitude": 25.0419, "longitude": 121.5611},
+    "天母": {"city": "台北市", "latitude": 25.1137, "longitude": 121.5306},
+    "新莊": {"city": "新北市", "latitude": 25.0417, "longitude": 121.4467},
+    "桃園": {"city": "桃園市", "latitude": 25.0015, "longitude": 121.1985},
+    "洲際": {"city": "台中市", "latitude": 24.1997, "longitude": 120.6843},
+    "台中": {"city": "台中市", "latitude": 24.1997, "longitude": 120.6843},
+    "台南": {"city": "台南市", "latitude": 22.9801, "longitude": 120.2088},
+    "澄清湖": {"city": "高雄市", "latitude": 22.6568, "longitude": 120.3529},
+    "嘉義": {"city": "嘉義市", "latitude": 23.4816, "longitude": 120.4491},
+    "亞太": {"city": "台南市", "latitude": 23.0575, "longitude": 120.2447},
+    "花蓮": {"city": "花蓮縣", "latitude": 23.9936, "longitude": 121.6021},
+    "台東": {"city": "台東縣", "latitude": 22.7553, "longitude": 121.1467},
+}
+
+WEATHER_CODE_TEXT = {
+    0: "晴",
+    1: "晴時多雲",
+    2: "多雲",
+    3: "陰",
+    45: "霧",
+    48: "霧",
+    51: "毛毛雨",
+    53: "毛毛雨",
+    55: "毛毛雨",
+    61: "小雨",
+    63: "雨",
+    65: "大雨",
+    66: "凍雨",
+    67: "凍雨",
+    71: "降雪",
+    73: "降雪",
+    75: "大雪",
+    80: "陣雨",
+    81: "陣雨",
+    82: "強陣雨",
+    95: "雷雨",
+    96: "雷雨",
+    99: "雷雨",
+}
 
 app = Flask(__name__)
 CORS(app)
@@ -707,8 +750,211 @@ def ai_request_allowed():
     AI_REQUEST_LOG[client_key] = recent_requests
     return True
 
-def game_ai_summary(game):
+def match_weather_location(venue):
+    venue_text = str(venue or "").strip()
+    if not venue_text:
+        return None
+    for keyword, info in VENUE_WEATHER_LOCATIONS.items():
+        if keyword in venue_text:
+            return {"venue": venue_text, "matched": keyword, **info}
+    return None
+
+def parse_cpbl_game_datetime(date_text, time_text=""):
+    match = re.search(r"(\d{1,2})/(\d{1,2})", str(date_text or ""))
+    if not match:
+        return None
+
+    now = datetime.now(TAIPEI_TIMEZONE)
+    month = int(match.group(1))
+    day = int(match.group(2))
+    hour = 18
+    minute = 35
+    time_match = re.search(r"(\d{1,2}):(\d{2})", str(time_text or ""))
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2))
+    try:
+        return datetime(now.year, month, day, hour, minute, tzinfo=TAIPEI_TIMEZONE)
+    except ValueError:
+        return None
+
+def weather_code_label(code):
+    try:
+        return WEATHER_CODE_TEXT.get(int(code), "天氣")
+    except (TypeError, ValueError):
+        return "天氣"
+
+def is_rainy_weather_code(code):
+    try:
+        return int(code) in {51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
+    except (TypeError, ValueError):
+        return False
+
+def fetch_open_meteo_weather(location):
+    cache_key = f"{location['latitude']:.4f},{location['longitude']:.4f}"
+    cached = WEATHER_CACHE.get(cache_key)
+    now_ts = time.time()
+    if cached and now_ts - cached["created_at"] < WEATHER_CACHE_SECONDS:
+        return cached["data"]
+
+    params = {
+        "latitude": location["latitude"],
+        "longitude": location["longitude"],
+        "current": "temperature_2m,weather_code,precipitation,rain",
+        "hourly": "temperature_2m,precipitation_probability,weather_code",
+        "forecast_days": 7,
+        "timezone": "Asia/Taipei",
+    }
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    WEATHER_CACHE[cache_key] = {"created_at": now_ts, "data": data}
+    return data
+
+def pick_weather_hour(weather_data, target_dt):
+    hourly = weather_data.get("hourly") if isinstance(weather_data, dict) else {}
+    times = hourly.get("time") if isinstance(hourly, dict) else []
+    if not target_dt or not times:
+        return None
+
+    target = target_dt.replace(minute=0, second=0, microsecond=0)
+    best_index = None
+    best_delta = None
+    for index, time_text in enumerate(times):
+        try:
+            current = datetime.fromisoformat(str(time_text)).replace(tzinfo=TAIPEI_TIMEZONE)
+        except ValueError:
+            continue
+        delta = abs((current - target).total_seconds())
+        if best_delta is None or delta < best_delta:
+            best_delta = delta
+            best_index = index
+
+    if best_index is None or best_delta is None or best_delta > 4 * 3600:
+        return None
+
+    def hourly_value(key):
+        values = hourly.get(key) or []
+        return values[best_index] if best_index < len(values) else None
+
     return {
+        "temperature": hourly_value("temperature_2m"),
+        "precipitation_probability": hourly_value("precipitation_probability"),
+        "weather_code": hourly_value("weather_code"),
+    }
+
+def weather_summary_for_game(venue, date_text="", time_text=""):
+    location = match_weather_location(venue)
+    if not location:
+        return None
+
+    target_dt = parse_cpbl_game_datetime(date_text, time_text)
+    now = datetime.now(TAIPEI_TIMEZONE)
+    if target_dt and target_dt.date() < now.date():
+        return None
+    if target_dt and target_dt.date() > (now + timedelta(days=6)).date():
+        return None
+
+    try:
+        weather_data = fetch_open_meteo_weather(location)
+        selected = pick_weather_hour(weather_data, target_dt) or {}
+        current = weather_data.get("current") or {}
+        temperature = selected.get("temperature", current.get("temperature_2m"))
+        weather_code = selected.get("weather_code", current.get("weather_code"))
+        precipitation_probability = selected.get("precipitation_probability")
+        condition = weather_code_label(weather_code)
+        rain_risk = intish(precipitation_probability) >= 60 or is_rainy_weather_code(weather_code)
+
+        if temperature is None:
+            temperature_label = ""
+        else:
+            temperature_label = f"{round(float(temperature))}°C"
+
+        if precipitation_probability is None:
+            display = f"{condition} {temperature_label}".strip()
+        elif rain_risk:
+            display = f"可能延賽｜降雨 {intish(precipitation_probability)}%"
+        else:
+            display = f"{condition} {temperature_label}".strip()
+
+        return {
+            "venue": location["venue"],
+            "matched_venue": location["matched"],
+            "city": location["city"],
+            "condition": condition,
+            "temperature": round(float(temperature), 1) if temperature is not None else None,
+            "precipitation_probability": precipitation_probability,
+            "rain_risk": rain_risk,
+            "display": display or "天氣同步中",
+            "source": "Open-Meteo",
+        }
+    except Exception as e:
+        print(f"天氣抓取失敗：{venue} {e}")
+        return {
+            "venue": location["venue"],
+            "matched_venue": location["matched"],
+            "city": location["city"],
+            "condition": "天氣同步中",
+            "temperature": None,
+            "precipitation_probability": None,
+            "rain_risk": False,
+            "display": "天氣同步中",
+            "source": "Open-Meteo",
+        }
+
+def weather_context_from_question(question):
+    text = str(question or "")
+    if not text:
+        return []
+
+    now = datetime.now(TAIPEI_TIMEZONE)
+    date_text = now.strftime("%m/%d")
+    time_text = now.strftime("%H:00")
+    if "明天" in text:
+        tomorrow = now + timedelta(days=1)
+        date_text = tomorrow.strftime("%m/%d")
+        time_text = "18:35"
+
+    summaries = []
+    seen = set()
+    for keyword in VENUE_WEATHER_LOCATIONS:
+        if keyword in text and keyword not in seen:
+            weather = weather_summary_for_game(keyword, date_text, time_text)
+            if weather:
+                summaries.append(weather)
+                seen.add(keyword)
+    return summaries
+
+def game_to_dict(game, include_weather=True):
+    data = {
+        "id": game.id,
+        "date": game.game_date,
+        "game_sno": game.game_sno,
+        "game_time": game.game_time,
+        "current_inning": infer_current_inning(game),
+        "away": game.away_team,
+        "home": game.home_team,
+        "away_score": game.away_score,
+        "home_score": game.home_score,
+        "away_pitcher": game.away_pitcher,
+        "home_pitcher": game.home_pitcher,
+        "winning_pitcher": game.winning_pitcher,
+        "losing_pitcher": game.losing_pitcher,
+        "save_pitcher": game.save_pitcher,
+        "mvp": game.mvp,
+        "mvp_team": game.mvp_team,
+        "mvp_note": game.mvp_note,
+        "location": game.location,
+        "status": game.game_status,
+    }
+    if include_weather:
+        data["weather"] = weather_summary_for_game(game.location, game.game_date, game.game_time)
+    return data
+
+def game_ai_summary(game):
+    summary = {
         "date": game.game_date,
         "time": game.game_time,
         "status": game.game_status,
@@ -727,6 +973,10 @@ def game_ai_summary(game):
         "mvp_team": game.mvp_team,
         "mvp_note": game.mvp_note,
     }
+    weather = weather_summary_for_game(game.location, game.game_date, game.game_time)
+    if weather:
+        summary["weather"] = weather
+    return summary
 
 def member_ai_summary(cards, lineup_slots):
     rarity_values = {"common": 4, "rare": 8, "holo": 14, "legend": 24}
@@ -793,7 +1043,7 @@ def member_ai_summary(cards, lineup_slots):
         "lineup_top_team_count": top_lineup_count,
     }
 
-def build_ai_context(user=None, active_page=""):
+def build_ai_context(user=None, active_page="", user_question=""):
     now = datetime.now(TAIPEI_TIMEZONE)
     today = now.strftime("%m/%d")
     today_games = Game.query.filter_by(game_date=today).order_by(Game.game_time.asc()).limit(6).all()
@@ -836,6 +1086,7 @@ def build_ai_context(user=None, active_page=""):
         "recent_finished_games": [game_ai_summary(game) for game in recent_games],
         "upcoming_games": [game_ai_summary(game) for game in upcoming_games],
         "standings": standings,
+        "asked_venue_weather": weather_context_from_question(user_question),
     }
 
     if user:
@@ -1921,28 +2172,8 @@ def get_games():
     if team:
         q = q.filter(or_(Game.away_team == team, Game.home_team == team))
     
-    # 5. 回傳資料 (包含你剛補上的投手欄位)
-    return jsonify([{
-        "id": g.id,
-        "date": g.game_date,
-        "game_sno": g.game_sno,
-        "game_time": g.game_time,
-        "current_inning": infer_current_inning(g),
-        "away": g.away_team,
-        "home": g.home_team,
-        "away_score": g.away_score,
-        "home_score": g.home_score,
-        "away_pitcher": g.away_pitcher, 
-        "home_pitcher": g.home_pitcher, 
-        "winning_pitcher": g.winning_pitcher,
-        "losing_pitcher": g.losing_pitcher,
-        "save_pitcher": g.save_pitcher,
-        "mvp": g.mvp,
-        "mvp_team": g.mvp_team,
-        "mvp_note": g.mvp_note,
-        "location": g.location,
-        "status": g.game_status
-    } for g in q.all()])
+    # 5. 回傳資料 (包含投手、MVP 與球場天氣)
+    return jsonify([game_to_dict(g) for g in q.all()])
 
 @app.route('/api/update/month')
 def update_specific_month():
@@ -2349,9 +2580,26 @@ def get_top_stats():
         return jsonify({
             "status": "error",
             "source": TOP_STATS_SOURCE_URL,
-            "data": [],
-            "message": str(e),
-        }), 200
+        "data": [],
+        "message": str(e),
+    }), 200
+
+@app.route('/api/weather/venue')
+def get_venue_weather():
+    venue = request.args.get("venue", "")
+    date_text = request.args.get("date", "")
+    time_text = request.args.get("time", "")
+    if not venue:
+        return jsonify({"error": "缺少球場名稱"}), 400
+    weather = weather_summary_for_game(venue, date_text, time_text)
+    if not weather:
+        return jsonify({
+            "venue": venue,
+            "display": "尚無球場天氣",
+            "rain_risk": False,
+            "source": "Open-Meteo",
+        })
+    return jsonify(weather)
 
 @app.route('/api/get_news')
 def get_news():
@@ -2404,11 +2652,11 @@ def ai_chat():
     if not messages or messages[-1]["role"] != "user":
         return jsonify({"error": "請輸入想問的問題"}), 400
 
-    context = build_ai_context(get_auth_user(), payload.get("active_page"))
+    context = build_ai_context(get_auth_user(), payload.get("active_page"), messages[-1]["content"])
     system_prompt = (
         "你是 GoBase AI，一位熟悉中華職棒的繁體中文球迷助理。"
         "回答要親切、精簡、容易閱讀。你可以解釋棒球規則、分析提供的賽事資料、"
-        "整理比分與戰績，以及在會員資料存在時協助卡牌與打線建議。"
+        "整理比分與戰績、依球場天氣提醒是否要帶雨具，以及在會員資料存在時協助卡牌與打線建議。"
         "只能把下方 CONTEXT 當成 GoBase 內的即時資料；資料沒有提供時要明確說目前查不到，"
         "不可捏造球員、比分、賽程、傷勢或官方公告。"
         "若使用者詢問醫療、賭博或投注，只提供一般資訊並提醒自行判斷。"

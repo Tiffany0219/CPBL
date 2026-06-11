@@ -94,6 +94,7 @@ const messageList = ref(null)
 const messages = ref([welcomeMessage()])
 const quickPrompts = [
   '今天有什麼比賽？',
+  '今天去洲際要帶雨衣嗎？',
   '幫我看目前球隊戰績',
   '解釋棒球的救援成功',
   '推薦我的卡牌打線'

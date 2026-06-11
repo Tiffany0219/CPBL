@@ -5765,6 +5765,7 @@ button:disabled {
 .ticket-location {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   color: #5f6b7a;
   font-size: 14px;
@@ -5773,6 +5774,31 @@ button:disabled {
 
 .ticket-location i {
   color: #b7791f;
+}
+
+.ticket-weather {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #eef7ff;
+  color: #1f5f99;
+  box-shadow: inset 0 0 0 1px rgba(31, 95, 153, 0.12);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.ticket-weather i {
+  color: currentColor;
+  font-size: 11px;
+}
+
+.ticket-weather.risky {
+  background: #fff1e8;
+  color: #e85d2a;
+  box-shadow: inset 0 0 0 1px #f6b08a;
 }
 
 .ticket-meta {
@@ -6172,6 +6198,10 @@ button:disabled {
 :where(.home-page, .schedule-group, .day-detail) .ticket-location i,
 :where(.home-page, .schedule-group, .day-detail) .ticket-date {
   color: #1f5f99;
+}
+
+:where(.home-page, .schedule-group, .day-detail) .ticket-weather i {
+  color: currentColor;
 }
 
 :where(.home-page, .schedule-group, .day-detail) .ticket-inning {
