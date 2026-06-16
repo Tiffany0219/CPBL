@@ -2,7 +2,7 @@ import os
 import re, time, json, traceback
 import random
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request
@@ -698,6 +698,13 @@ def card_to_dict(card):
         "count": card.count,
     }
 
+def datetime_to_utc_iso(value):
+    if not value:
+        return ""
+    if value.tzinfo is None:
+        return f"{value.isoformat()}Z"
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 def ticket_to_dict(ticket):
     return {
         "id": ticket.id,
@@ -711,13 +718,13 @@ def ticket_to_dict(ticket):
         "status": ticket.game_status,
         "note": ticket.note,
         "image": ticket.image,
-        "createdAt": ticket.created_at.isoformat() if ticket.created_at else "",
+        "createdAt": datetime_to_utc_iso(ticket.created_at),
     }
 
 def lineup_to_dict(lineup):
     return {
         "slots": parse_json_payload(lineup.slots if lineup else "[]", []),
-        "updatedAt": lineup.updated_at.isoformat() if lineup and lineup.updated_at else "",
+        "updatedAt": datetime_to_utc_iso(lineup.updated_at) if lineup else "",
     }
 
 def get_auth_user():

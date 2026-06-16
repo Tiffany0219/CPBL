@@ -8,3 +8,6 @@ __pycache__
 cpbl-backend/instance/*.db
 cpbl-vue/dist
 presentation.html
+make_ppt.py
+*.pptx
+outputs/

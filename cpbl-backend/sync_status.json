@@ -3,19 +3,19 @@
         "key": "month",
         "label": "月份賽程",
         "status": "success",
-        "updated_at": "2026-06-07T22:19:57",
+        "updated_at": "2026-06-14T20:10:10",
         "summary": {
             "status": "success",
             "year": 2026,
             "month": 6,
-            "count": 48
+            "count": 60
         }
     },
     "today": {
         "key": "today",
         "label": "今日狀態",
         "status": "success",
-        "updated_at": "2026-06-07T22:19:50",
+        "updated_at": "2026-06-14T22:37:57",
         "summary": {
             "status": "success",
             "count": 0
@@ -25,7 +25,7 @@
         "key": "standings",
         "label": "球隊戰績",
         "status": "success",
-        "updated_at": "2026-06-10T16:38:05",
+        "updated_at": "2026-06-14T22:55:43",
         "summary": {
             "groups": 3
         }
